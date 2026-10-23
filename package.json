@@ -1,0 +1,64 @@
+{
+  "name": "@tweetapi/mcp",
+  "version": "0.2.0",
+  "description": "MCP server for TweetAPI: read-only Twitter data and docs for AI agents. Not affiliated with X Corp.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "homepage": "https://tweetapi.com/mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tweetapi/tweetapi-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tweetapi/tweetapi-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "tweetapi",
+    "twitter",
+    "twitter-api",
+    "x-api",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-agents"
+  ],
+  "bin": {
+    "tweetapi-mcp": "dist/bin.js",
+    "tweetapi-mcp-http": "dist/http-bin.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "format:check": "prettier --check \"**/*.{md,mdx,yml,yaml,json,ts}\"",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules\" \"!.pnpm-store\"",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/http-bin.js",
+    "smoke:http": "pnpm run build && node dist/http-smoke.js",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "pnpm run build && vitest run --config vitest.config.ts",
+    "check:release": "pnpm run check && python3 scripts/check-release.py",
+    "check:secrets": "python3 scripts/check-secrets.py",
+    "check": "pnpm run format:check && pnpm run lint:md && pnpm run typecheck && pnpm run test && pnpm run check:secrets"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "markdownlint-cli2": "^0.18.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}

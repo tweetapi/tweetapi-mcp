@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.tweetapi/mcp",
+  "title": "TweetAPI MCP",
+  "description": "Read-only public Twitter data and TweetAPI docs for AI agents. Not affiliated with X Corp.",
+  "version": "0.2.0",
+  "websiteUrl": "https://tweetapi.com/mcp",
+  "repository": {
+    "url": "https://github.com/tweetapi/tweetapi-mcp",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://tweetapi.com/favicon.png",
+      "mimeType": "image/png",
+      "sizes": ["32x32"]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.tweetapi.com/mcp"
+    }
+  ]
+}

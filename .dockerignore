@@ -1,0 +1,15 @@
+.cache
+.DS_Store
+.env
+.env.*
+.git
+.github
+.pnpm-store
+build
+coverage
+dist
+node_modules
+npm-debug.log*
+pnpm-debug.log*
+README.md
+docs
