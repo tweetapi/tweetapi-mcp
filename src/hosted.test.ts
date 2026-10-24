@@ -584,6 +584,73 @@ describe("hosted MCP HTTP server", () => {
     }
   });
 
+  it("logs who was rejected, with the grant of an expired token", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const app = await listen(protectedOptions());
+
+    try {
+      const expired = makeAccessToken({ exp: Math.floor(Date.now() / 1000) - 3600 });
+      await postMcp(app.url, { "User-Agent": "health-check/1.0" });
+      await postMcp(app.url, { ...authHeaders(expired), "User-Agent": 'odd"agent\u00e9' });
+
+      const lines = warn.mock.calls.map(([line]) => String(line));
+      expect(lines[0]).toContain("status=missing");
+      expect(lines[0]).toContain('ua="health-check/1.0"');
+      expect(lines[0]).not.toContain("grant=");
+      expect(lines[1]).toContain("grant=grant_1");
+      expect(lines[1]).toContain(`ua="odd'agent?"`);
+      expect(lines[1]).toContain("reason=MCP access token is expired.");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not trust the grant of a token with a bad signature", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const app = await listen(protectedOptions());
+
+    try {
+      await postMcp(app.url, authHeaders(makeAccessToken({}, "wrong-secret")));
+
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).toContain("reason=MCP access token is invalid.");
+      expect(line).not.toContain("grant=");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("logs the grant when the dashboard reports it inactive", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const app = await listen(
+      protectedOptions({ authFetch: vi.fn(async () => new Response("{}", { status: 404 })) })
+    );
+
+    try {
+      expect((await postMcp(app.url, authHeaders())).status).toBe(401);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("grant=grant_1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("logs each authenticated initialize with its grant and client", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const app = await listen(protectedOptions());
+    const client = await connectClient(app.url, authHeaders());
+
+    try {
+      expect(log.mock.calls.map(([line]) => String(line))).toContainEqual(
+        expect.stringContaining(
+          '[mcp] initialize grant=grant_1 client="tweetapi-hosted-test/0.1.0"'
+        )
+      );
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
   it("rejects non-production API base URLs when NODE_ENV is production", async () => {
     vi.stubEnv("NODE_ENV", "production");
 

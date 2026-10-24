@@ -38,6 +38,7 @@ export type McpAuthFailure = {
   httpStatus: 401 | 403 | 503;
   reason: string;
   error?: "invalid_token" | "insufficient_scope";
+  grantId?: string;
 };
 
 export type McpAuthResult = AuthenticatedMcpGrant | McpAuthFailure;
@@ -128,7 +129,8 @@ export async function authenticateMcpAuthorization(
     return claims;
   }
 
-  return resolveMcpGrant(claims, config);
+  const resolved = await resolveMcpGrant(claims, config);
+  return resolved.status === "valid" ? resolved : { ...resolved, grantId: claims.grantId };
 }
 
 type ParsedBearer =
@@ -186,6 +188,17 @@ function verifyMcpAccessToken(
     };
   }
 
+  // The signature checked out, so the grant ID is ours; keep it for the rejection log.
+  const result = checkMcpAccessTokenClaims(claims, config);
+  return isMcpAuthFailure(result) && typeof claims.grant_id === "string"
+    ? { ...result, grantId: claims.grant_id }
+    : result;
+}
+
+function checkMcpAccessTokenClaims(
+  claims: Record<string, unknown>,
+  config: McpAuthConfig
+): McpAccessTokenClaims | McpAuthFailure {
   const now = Math.floor(Date.now() / 1000);
   if (typeof claims.exp !== "number" || claims.exp + CLOCK_SKEW_SECONDS <= now) {
     return {

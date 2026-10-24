@@ -180,7 +180,7 @@ export function createHostedMcpRequestHandler(options: HostedMcpServerOptions = 
     }
 
     if (auth.status !== "valid") {
-      sendMcpAuthFailure(res, auth, authConfig);
+      sendMcpAuthFailure(req, res, auth, authConfig);
       return;
     }
 
@@ -199,6 +199,14 @@ export function createHostedMcpRequestHandler(options: HostedMcpServerOptions = 
 
     try {
       const parsedBody = await readJsonBody(req, maxBodyBytes);
+      const initializingClient = getInitializingClient(parsedBody);
+      if (initializingClient) {
+        // One line per authenticated initialize request, so a client's checks show up even when
+        // they pass. It's logged before the MCP handshake runs.
+        console.log(
+          `[mcp] initialize grant=${auth.grantId} client="${initializingClient}" ua="${userAgent(req)}"`
+        );
+      }
       mcpServer = createTweetApiMcpServer({
         live: true,
         docsService,
@@ -332,6 +340,7 @@ function sendJson(res: ServerResponse, statusCode: number, payload: unknown) {
 }
 
 function sendMcpAuthFailure(
+  req: IncomingMessage,
   res: ServerResponse,
   failure: McpAuthFailure,
   authConfig: McpAuthConfig
@@ -342,6 +351,8 @@ function sendMcpAuthFailure(
       `status=${failure.status}`,
       `http_status=${failure.httpStatus}`,
       failure.error ? `error=${failure.error}` : undefined,
+      failure.grantId ? `grant=${failure.grantId}` : undefined,
+      `ua="${userAgent(req)}"`,
       `reason=${failure.reason}`,
     ]
       .filter(Boolean)
@@ -367,6 +378,34 @@ function sendMcpAuthFailure(
     },
     headers
   );
+}
+
+function getInitializingClient(body: unknown) {
+  const messages = Array.isArray(body) ? body : [body];
+  const initialize = messages.find(
+    (message): message is { params?: { clientInfo?: { name?: unknown; version?: unknown } } } =>
+      typeof message === "object" &&
+      message !== null &&
+      (message as { method?: unknown }).method === "initialize"
+  );
+  if (!initialize) {
+    return undefined;
+  }
+
+  const clientInfo = initialize.params?.clientInfo;
+  return logSafe(`${String(clientInfo?.name ?? "unknown")}/${String(clientInfo?.version ?? "?")}`);
+}
+
+function userAgent(req: IncomingMessage) {
+  return logSafe(req.headers["user-agent"] ?? "none");
+}
+
+// Client-supplied text: keep log lines on one line and the quoting intact.
+function logSafe(value: string) {
+  return value
+    .replace(/[^\x20-\x7E]/gu, "?")
+    .replace(/["\\]/gu, "'")
+    .slice(0, 120);
 }
 
 function sendJsonRpcError(res: ServerResponse, httpStatus: number, code: number, message: string) {
