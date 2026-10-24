@@ -605,7 +605,36 @@ describe("hosted MCP HTTP server", () => {
     }
   });
 
-  it("logs each new connection with its grant and client", async () => {
+  it("does not trust the grant of a token with a bad signature", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const app = await listen(protectedOptions());
+
+    try {
+      await postMcp(app.url, authHeaders(makeAccessToken({}, "wrong-secret")));
+
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).toContain("reason=MCP access token is invalid.");
+      expect(line).not.toContain("grant=");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("logs the grant when the dashboard reports it inactive", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const app = await listen(
+      protectedOptions({ authFetch: vi.fn(async () => new Response("{}", { status: 404 })) })
+    );
+
+    try {
+      expect((await postMcp(app.url, authHeaders())).status).toBe(401);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("grant=grant_1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("logs each authenticated initialize with its grant and client", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const app = await listen(protectedOptions());
     const client = await connectClient(app.url, authHeaders());
@@ -619,77 +648,6 @@ describe("hosted MCP HTTP server", () => {
     } finally {
       await client.close();
       await app.close();
-    }
-  });
-
-  it.each([
-    ["unreachable", () => Promise.reject(new TypeError("fetch failed"))],
-    ["returning 502", async () => new Response("Bad Gateway", { status: 502 })],
-  ])("reuses a recent grant check while the dashboard is %s", async (_label, outage) => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const resolver = createGrantResolver();
-    let dashboardUp = true;
-    const authFetch = vi.fn((input: string | URL | Request, init?: RequestInit) =>
-      dashboardUp ? resolver(input, init) : outage()
-    );
-    const app = await listen(protectedOptions({ authFetch }));
-    const client = await connectClient(app.url, authHeaders());
-
-    try {
-      dashboardUp = false;
-      const tools = await client.listTools();
-
-      expect(tools.tools.map((tool) => tool.name)).toContain("tweetapi_search");
-      expect(warn.mock.calls.map(([line]) => String(line))).toContainEqual(
-        expect.stringContaining("reusing a grant check from 0s ago grant=grant_1")
-      );
-    } finally {
-      await client.close();
-      await app.close();
-    }
-  });
-
-  it("fails closed without a recent check, after the window, and once a grant was revoked", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const resolver = createGrantResolver();
-    const answers: Array<"ok" | "revoked" | "down"> = [];
-    const authFetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-      const answer = answers.shift();
-      if (answer === "ok") {
-        return resolver(input, init);
-      }
-      if (answer === "revoked") {
-        return Promise.resolve(new Response("{}", { status: 404 }));
-      }
-      return Promise.reject(new TypeError("fetch failed"));
-    });
-
-    const fresh = await listen(protectedOptions({ authFetch }));
-    try {
-      answers.push("down");
-      expect((await postMcp(fresh.url, authHeaders())).status).toBe(503);
-    } finally {
-      await fresh.close();
-    }
-
-    const revoked = await listen(protectedOptions({ authFetch }));
-    try {
-      answers.push("ok", "revoked", "down");
-      expect((await postMcp(revoked.url, authHeaders())).status).not.toBe(503);
-      expect((await postMcp(revoked.url, authHeaders())).status).toBe(401);
-      expect((await postMcp(revoked.url, authHeaders())).status).toBe(503);
-    } finally {
-      await revoked.close();
-    }
-
-    const stale = await listen(protectedOptions({ authFetch, authResolverFallbackMs: 1 }));
-    try {
-      answers.push("ok", "down");
-      expect((await postMcp(stale.url, authHeaders())).status).not.toBe(503);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect((await postMcp(stale.url, authHeaders())).status).toBe(503);
-    } finally {
-      await stale.close();
     }
   });
 

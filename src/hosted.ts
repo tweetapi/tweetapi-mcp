@@ -60,7 +60,6 @@ export type HostedMcpServerOptions = {
   dashboardInternalToken?: string;
   oauthJwtSecret?: string;
   authResolveTimeoutMs?: number;
-  authResolverFallbackMs?: number;
 };
 
 export function createHostedMcpHttpServer(options: HostedMcpServerOptions = {}): Server {
@@ -120,7 +119,6 @@ export function createHostedMcpRequestHandler(options: HostedMcpServerOptions = 
     jwtSecret: options.oauthJwtSecret,
     fetch: options.authFetch,
     resolveTimeoutMs: options.authResolveTimeoutMs,
-    resolverFallbackMs: options.authResolverFallbackMs,
   });
 
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -203,7 +201,8 @@ export function createHostedMcpRequestHandler(options: HostedMcpServerOptions = 
       const parsedBody = await readJsonBody(req, maxBodyBytes);
       const initializingClient = getInitializingClient(parsedBody);
       if (initializingClient) {
-        // One line per new connection, so a client's checks show up even when they pass.
+        // One line per authenticated initialize request, so a client's checks show up even when
+        // they pass. It's logged before the MCP handshake runs.
         console.log(
           `[mcp] initialize grant=${auth.grantId} client="${initializingClient}" ua="${userAgent(req)}"`
         );

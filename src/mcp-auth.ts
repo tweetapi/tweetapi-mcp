@@ -3,9 +3,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { fetchWithTimeout, readPositiveIntegerEnv } from "./fetch-timeout.js";
 
 const DEFAULT_RESOLVE_TIMEOUT_MS = 5_000;
-// While the dashboard is unreachable (a deploy, a restart), reuse a grant check this recent.
-const DEFAULT_RESOLVER_FALLBACK_MS = 5 * 60_000;
-const MAX_RECENT_GRANTS = 1_000;
 const CLOCK_SKEW_SECONDS = 30;
 const MIN_BACKING_API_KEY_LENGTH = 8;
 
@@ -25,13 +22,6 @@ export type McpAuthConfig = {
   jwtSecret?: string;
   fetch: FetchLike;
   resolveTimeoutMs: number;
-  resolverFallbackMs: number;
-  recentGrants: Map<string, RecentGrant>;
-};
-
-type RecentGrant = {
-  apiKey: string;
-  checkedAt: number;
 };
 
 export type AuthenticatedMcpGrant = {
@@ -68,7 +58,6 @@ export function buildMcpAuthConfig(options: {
   jwtSecret?: string;
   fetch?: FetchLike;
   resolveTimeoutMs?: number;
-  resolverFallbackMs?: number;
 }): McpAuthConfig {
   const issuer = trimTrailingSlash(
     options.issuer ?? process.env.MCP_AUTH_ISSUER ?? DEFAULT_MCP_AUTH_ISSUER
@@ -93,10 +82,6 @@ export function buildMcpAuthConfig(options: {
     resolveTimeoutMs:
       options.resolveTimeoutMs ??
       readPositiveIntegerEnv("MCP_AUTH_RESOLVE_TIMEOUT_MS", DEFAULT_RESOLVE_TIMEOUT_MS),
-    resolverFallbackMs:
-      options.resolverFallbackMs ??
-      readPositiveIntegerEnv("MCP_AUTH_RESOLVER_FALLBACK_MS", DEFAULT_RESOLVER_FALLBACK_MS),
-    recentGrants: new Map(),
   };
 }
 
@@ -312,17 +297,14 @@ async function resolveMcpGrant(
       config.resolveTimeoutMs
     );
   } catch {
-    return (
-      useRecentGrant(claims, config) ?? {
-        status: "service_error",
-        httpStatus: 503,
-        reason: "MCP grant resolver is unavailable.",
-      }
-    );
+    return {
+      status: "service_error",
+      httpStatus: 503,
+      reason: "MCP grant resolver is unavailable.",
+    };
   }
 
   if (response.status === 401 || response.status === 403 || response.status === 404) {
-    config.recentGrants.delete(recentGrantKey(claims));
     return {
       status: "invalid",
       httpStatus: 401,
@@ -332,12 +314,11 @@ async function resolveMcpGrant(
   }
 
   if (!response.ok) {
-    const failure: McpAuthFailure = {
+    return {
       status: "service_error",
       httpStatus: 503,
       reason: "MCP grant resolver returned an error.",
     };
-    return response.status >= 500 ? (useRecentGrant(claims, config) ?? failure) : failure;
   }
 
   let payload: unknown;
@@ -368,58 +349,14 @@ async function resolveMcpGrant(
     };
   }
 
-  rememberGrant(claims, record.apiKey, config);
-
-  return validGrant(claims, record.apiKey);
-}
-
-function validGrant(claims: McpAccessTokenClaims, apiKey: string): AuthenticatedMcpGrant {
   return {
     status: "valid",
-    apiKey,
+    apiKey: record.apiKey,
     grantId: claims.grantId,
     userId: claims.subject,
     scopes: claims.scopes,
     mode: "mcp-token",
   };
-}
-
-function recentGrantKey(claims: McpAccessTokenClaims) {
-  return [claims.grantId, claims.subject, claims.scopes.join(" ")].join("\n");
-}
-
-function rememberGrant(claims: McpAccessTokenClaims, apiKey: string, config: McpAuthConfig) {
-  const key = recentGrantKey(claims);
-  config.recentGrants.delete(key);
-  config.recentGrants.set(key, { apiKey, checkedAt: Date.now() });
-
-  if (config.recentGrants.size > MAX_RECENT_GRANTS) {
-    const oldest = config.recentGrants.keys().next().value;
-    if (oldest !== undefined) {
-      config.recentGrants.delete(oldest);
-    }
-  }
-}
-
-// Only used when the dashboard can't answer. A grant it reported as inactive is never reused.
-function useRecentGrant(
-  claims: McpAccessTokenClaims,
-  config: McpAuthConfig
-): AuthenticatedMcpGrant | undefined {
-  const recent = config.recentGrants.get(recentGrantKey(claims));
-  if (!recent) {
-    return undefined;
-  }
-
-  const ageMs = Date.now() - recent.checkedAt;
-  if (ageMs > config.resolverFallbackMs) {
-    return undefined;
-  }
-
-  console.warn(
-    `[mcp-auth] resolver unavailable, reusing a grant check from ${Math.round(ageMs / 1000)}s ago grant=${claims.grantId}`
-  );
-  return validGrant(claims, recent.apiKey);
 }
 
 export function signMcpAccessTokenForTesting(
