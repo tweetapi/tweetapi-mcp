@@ -33,9 +33,15 @@ MCP_DASHBOARD_RESOLVE_URL=https://tweetapi.com/api/internal/mcp/resolve
 MCP_DASHBOARD_INTERNAL_TOKEN=change_me
 MCP_OAUTH_JWT_SECRET=change_me
 MCP_AUTH_RESOLVE_TIMEOUT_MS=5000
+MCP_AUTH_RESOLVER_FALLBACK_MS=300000
 MCP_LIVE_FETCH_TIMEOUT_MS=15000
 MCP_DOCS_FETCH_TIMEOUT_MS=8000
 ```
+
+Every authenticated request asks the dashboard whether its grant is still active. If the dashboard
+can't answer (a network error or a 5xx, as during a dashboard deploy), the service reuses that
+grant's last successful check when it is newer than `MCP_AUTH_RESOLVER_FALLBACK_MS` (5 minutes by
+default). A grant the dashboard reported as inactive is never reused.
 
 Use placeholder values only in docs and examples. Do not put production API keys in this repo.
 
