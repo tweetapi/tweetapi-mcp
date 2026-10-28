@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { jsonError, jsonText } from "./content.js";
+import { catalogCostSummary } from "./cost.js";
 import { DOCS_SOURCES, DocsFetchError, TweetApiDocsService } from "./docs.js";
 import { createLiveToolDefinitions, LIVE_TOOL_ENDPOINTS, type LiveToolsOptions } from "./live.js";
 
@@ -89,6 +90,9 @@ type ToolCatalogEntry = {
     method: string;
     path: string;
   } | null;
+  cost: ReturnType<typeof catalogCostSummary> | null;
+  responseFormats: string[];
+  linkInputs: string[];
   inputSchema: Record<string, unknown>;
 };
 
@@ -107,7 +111,7 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
     },
     {
       instructions:
-        "Use this server to inspect TweetAPI docs and, when live tools are enabled, make bounded read-only TweetAPI requests through a dashboard-backed MCP grant. Hosted HTTP clients use MCP OAuth bearer tokens; local stdio live mode reads TWEETAPI_API_KEY.",
+        "Use this server to inspect TweetAPI docs and, when live tools are enabled, make bounded read-only TweetAPI requests through a dashboard-backed MCP grant. Hosted HTTP clients use MCP OAuth bearer tokens; local stdio live mode reads TWEETAPI_API_KEY. Live data tools usually cost 1 API unit per call; tweetapi_account_usage is free and shows the units left. Pass responseFormat compact for smaller results, and post or profile links where a tool accepts them.",
     }
   );
 
@@ -119,6 +123,7 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
     registerLiveTools(server, {
       apiKey: options.liveTools?.apiKey ?? process.env.TWEETAPI_API_KEY,
       apiBaseUrl: options.liveTools?.apiBaseUrl,
+      now: options.liveTools?.now,
       fetch: options.liveTools?.fetch,
       fetchTimeoutMs: options.liveTools?.fetchTimeoutMs,
       missingApiKeyCode: options.liveTools?.missingApiKeyCode,
@@ -297,6 +302,7 @@ function registerLiveTools(server: McpServer, options: LiveToolsOptions) {
         title: tool.title,
         description: tool.description,
         inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       tool.handler
@@ -393,6 +399,9 @@ function buildToolCatalog(filters: ToolCatalogFilters) {
     readOnly: true,
     requiresApiKey: false,
     endpoint: null,
+    cost: null,
+    responseFormats: [],
+    linkInputs: [],
     inputSchema: describeInputSchema(tool.inputSchema),
   }));
   const liveTools: ToolCatalogEntry[] = LIVE_TOOL_ENDPOINTS.map((tool) => ({
@@ -407,6 +416,9 @@ function buildToolCatalog(filters: ToolCatalogFilters) {
       method: tool.method,
       path: tool.path,
     },
+    cost: catalogCostSummary(tool.method, tool.path),
+    responseFormats: catalogResponseFormats(tool),
+    linkInputs: Object.keys(tool.identifiers ?? {}),
     inputSchema: describeInputSchema(tool.inputSchema),
   }));
   const tools = [...docsTools, ...liveTools].filter((tool) =>
@@ -418,6 +430,13 @@ function buildToolCatalog(filters: ToolCatalogFilters) {
     count: tools.length,
     tools,
   };
+}
+
+// The output.format values a tool's results can carry. tweetapi_tweet_metrics has no responseFormat
+// input; it always returns its own "metrics" projection.
+function catalogResponseFormats(tool: (typeof LIVE_TOOL_ENDPOINTS)[number]): string[] {
+  if (tool.responseShape === "tweetMetrics") return ["metrics"];
+  return tool.compactKind ? ["full", "compact"] : ["full"];
 }
 
 function normalizeCatalogFilters(filters: ToolCatalogFilters): NormalizedToolCatalogFilters {

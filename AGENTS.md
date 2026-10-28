@@ -45,6 +45,8 @@ agent-skill repository. Do not duplicate either surface here.
 - Never forward the MCP bearer token upstream and never expose the resolved API key to the client.
 - Keep live tools limited to explicitly allowed public, customer-facing, read-only `/tw-v2`
   operations in `src/live.ts`.
+- `tweetapi_account_usage` (read-only `GET /tw-v2/account/usage` for the grant's own key, no inputs)
+  is the only approved account tool.
 - Do not add posting, DMs, follows, profile edits, account-secret inputs, billing, administration,
   hidden endpoints, or internal routes without a separately approved auth, scope, audit, redaction,
   and confirmation design.

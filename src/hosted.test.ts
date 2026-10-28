@@ -10,6 +10,7 @@ import {
   GLAMA_OWNERSHIP_PATH,
   parseAllowedHosts,
 } from "./hosted.js";
+import { LIVE_TOOL_ENDPOINTS } from "./live.js";
 import {
   DEFAULT_MCP_AUTH_ISSUER,
   DEFAULT_MCP_RESOURCE,
@@ -644,6 +645,194 @@ describe("hosted MCP HTTP server", () => {
         expect.stringContaining(
           '[mcp] initialize grant=grant_1 client="tweetapi-hosted-test/0.1.0"'
         )
+      );
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it("serves protocol discovery: initialize, server instructions, and live output schemas", async () => {
+    const app = await listen(protectedOptions());
+    const client = await connectClient(app.url, authHeaders());
+
+    try {
+      expect(client.getServerVersion()).toMatchObject({ name: "tweetapi-mcp" });
+      expect(client.getInstructions()).toContain("tweetapi_account_usage");
+      const tools = await client.listTools();
+      const usage = tools.tools.find((tool) => tool.name === "tweetapi_account_usage");
+
+      expect(usage?.annotations?.readOnlyHint).toBe(true);
+      expect(usage?.outputSchema?.properties).toHaveProperty("cost");
+      const liveNames = new Set(LIVE_TOOL_ENDPOINTS.map((tool) => tool.name));
+      const liveTools = tools.tools.filter((tool) => liveNames.has(tool.name));
+      expect(liveTools).toHaveLength(LIVE_TOOL_ENDPOINTS.length);
+      expect(liveTools.every((tool) => tool.outputSchema?.type === "object")).toBe(true);
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it.each([
+    ["expired", { exp: Math.floor(Date.now() / 1000) - 3600 }, undefined, "expired"],
+    ["wrong audience", { aud: "https://other.example/mcp" }, undefined, "audience"],
+    ["wrong issuer", { iss: "https://evil.example" }, undefined, "issuer"],
+    ["bad signature", {}, "a-different-secret", "invalid"],
+    ["missing grant", { grant_id: undefined }, undefined, "grant"],
+  ])(
+    "rejects a %s token with an OAuth challenge before resolving a key",
+    async (_label, overrides, secret, reason) => {
+      const authFetch = createGrantResolver();
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [] })));
+      const app = await listen(
+        protectedOptions({ authFetch, fetch: fetchMock, apiBaseUrl: "https://api.example.test" })
+      );
+
+      try {
+        const result = await postMcp(app.url, authHeaders(makeAccessToken(overrides, secret)));
+        const body = JSON.parse(result.text);
+
+        expect(result.status).toBe(401);
+        expect(result.headers.get("www-authenticate")).toContain('error="invalid_token"');
+        expect(result.headers.get("www-authenticate")).toContain("resource_metadata=");
+        expect(body.error.message.toLowerCase()).toContain(reason);
+        expect(authFetch).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    }
+  );
+
+  it("re-checks the grant on every request, so a revoked grant fails on the next call", async () => {
+    let revoked = false;
+    const authFetch = vi.fn(async () =>
+      revoked
+        ? new Response(JSON.stringify({ message: "MCP grant not found" }), { status: 404 })
+        : new Response(JSON.stringify({ apiKey: TEST_RESOLVED_API_KEY }), { status: 200 })
+    );
+    const app = await listen(protectedOptions({ authFetch }));
+
+    try {
+      const before = await postMcp(app.url, authHeaders());
+      // A refreshed access token for the same grant works the same way.
+      const refreshed = await postMcp(
+        app.url,
+        authHeaders(makeAccessToken({ iat: Math.floor(Date.now() / 1000) + 1 }))
+      );
+      revoked = true;
+      const after = await postMcp(app.url, authHeaders());
+
+      expect(before.status).toBe(200);
+      expect(refreshed.status).toBe(200);
+      expect(after.status).toBe(401);
+      expect(after.headers.get("www-authenticate")).toContain('error="invalid_token"');
+      expect(JSON.parse(after.text).error.message).toBe("MCP grant is not active.");
+      expect(authFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    ["is down", async () => Promise.reject(new TypeError("fetch failed")), "unavailable"],
+    ["returns 500", async () => new Response("{}", { status: 500 }), "returned an error"],
+    [
+      "returns a malformed key",
+      async () => new Response(JSON.stringify({ apiKey: "YOUR_MALFORMED_KEY" })),
+      "valid backing API key",
+    ],
+  ])(
+    "returns 503 without an OAuth challenge when the grant resolver %s",
+    async (_label, resolver, reason) => {
+      const app = await listen(protectedOptions({ authFetch: vi.fn(resolver) }));
+
+      try {
+        const result = await postMcp(app.url, authHeaders());
+
+        expect(result.status).toBe(503);
+        expect(result.headers.get("www-authenticate")).toBeNull();
+        expect(JSON.parse(result.text).error.message).toContain(reason);
+      } finally {
+        await app.close();
+      }
+    }
+  );
+
+  it("reports a rejected TweetAPI key as a tool error, not as an MCP sign-in failure", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ statusCode: 401, message: "Invalid API key or no limit configured" }),
+          { status: 401 }
+        )
+    );
+    const app = await listen(
+      protectedOptions({ apiBaseUrl: "https://api.example.test", fetch: fetchMock })
+    );
+
+    try {
+      const result = await postMcp(app.url, authHeaders(), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "tweetapi_account_usage", arguments: {} },
+      });
+      const payload = parseMcpResponseText(result.text);
+      const body = JSON.parse(payload.result?.content?.[0]?.text ?? "{}");
+
+      expect(result.status).toBe(200);
+      expect(result.headers.get("www-authenticate")).toBeNull();
+      expect(payload.result?.isError).toBe(true);
+      expect(body.error).toMatchObject({
+        code: "TWEETAPI_AUTH_FAILED",
+        details: { layer: "tweetapi_api_key" },
+      });
+      expect(JSON.stringify(body)).not.toContain(TEST_RESOLVED_API_KEY);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves the usage tool and compact results over hosted HTTP with structured content", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      String(input).includes("/account/usage")
+        ? new Response(
+            JSON.stringify({ data: { availableUnits: 5, rateLimit: { requestsPerMinute: 10 } } })
+          )
+        : new Response(
+            JSON.stringify({
+              data: { id: "12", username: "jack", name: "jack", banner: "b.jpg" },
+            })
+          )
+    );
+    const app = await listen(
+      protectedOptions({ apiBaseUrl: "https://api.example.test", fetch: fetchMock })
+    );
+    const client = await connectClient(app.url, authHeaders());
+
+    try {
+      const usage = await client.callTool({ name: "tweetapi_account_usage", arguments: {} });
+      const profile = await client.callTool({
+        name: "tweetapi_user_by_username",
+        arguments: { username: "https://x.com/jack", responseFormat: "compact" },
+      });
+
+      expect(usage.structuredContent).toMatchObject({
+        cost: { estimatedUnits: 0 },
+        result: { data: { availableUnits: 5 } },
+      });
+      expect(profile.structuredContent).toMatchObject({
+        resolvedInput: { username: { value: "jack", source: "link" } },
+        result: { user: { username: "jack", url: "https://x.com/jack" } },
+        output: { format: "compact" },
+      });
+      expect(JSON.stringify(profile.structuredContent)).not.toContain("b.jpg");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+        "https://api.example.test/tw-v2/user/by-username?username=jack"
       );
     } finally {
       await client.close();
