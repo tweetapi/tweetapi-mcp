@@ -8,6 +8,7 @@ import {
   createFixedWindowRateLimiter,
   createHostedMcpHttpServer,
   GLAMA_OWNERSHIP_PATH,
+  MAX_REQUEST_ELEMENTS,
   parseAllowedHosts,
 } from "./hosted.js";
 import { LIVE_TOOL_ENDPOINTS } from "./live.js";
@@ -65,7 +66,7 @@ async function connectClient(url: URL, headers?: Record<string, string>) {
 async function postMcp(
   url: URL,
   headers: Record<string, string> = {},
-  body: Record<string, unknown> = {
+  body: unknown = {
     jsonrpc: "2.0",
     id: 1,
     method: "tools/list",
@@ -643,6 +644,72 @@ describe("hosted MCP HTTP server", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally {
       await client.close();
+      await app.close();
+    }
+  });
+
+  it("rejects requests over the whole-request element limit before the SDK validates them", async () => {
+    const app = await listen(protectedOptions());
+    // jsonrpc, id, method, params, name and arguments are 6 elements; the rest are the values.
+    const promptsGet = (values: number) => ({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "prompts/get",
+      params: {
+        name: "integrate_tweetapi",
+        arguments: Object.fromEntries(Array.from({ length: values }, (_, i) => [`a${i}`, 0])),
+      },
+    });
+    const limitMessage = `MCP request body has more than ${MAX_REQUEST_ELEMENTS} JSON array elements and object keys.`;
+
+    try {
+      const atLimit = await postMcp(app.url, authHeaders(), promptsGet(MAX_REQUEST_ELEMENTS - 6));
+      const overLimit = await postMcp(app.url, authHeaders(), promptsGet(MAX_REQUEST_ELEMENTS - 5));
+
+      // At the limit the SDK gets the request and rejects the non-string prompt arguments itself.
+      expect(atLimit.status).toBe(200);
+      expect(atLimit.text).toContain('"error"');
+      expect(atLimit.text).not.toContain(limitMessage);
+      expect(overLimit.status).toBe(413);
+      expect(JSON.parse(overLimit.text)).toEqual({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: limitMessage },
+        id: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("counts nested values and every message of a batch toward the request element limit", async () => {
+    const app = await listen(protectedOptions());
+    let nested: unknown = [];
+    for (let depth = 0; depth < MAX_REQUEST_ELEMENTS; depth += 1) {
+      nested = [nested];
+    }
+    // 50 messages of 46 elements each: every message is small, the batch as a whole is not.
+    const batch = Array.from({ length: 50 }, (_, id) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "prompts/get",
+      params: {
+        name: "integrate_tweetapi",
+        arguments: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`a${i}`, "x"])),
+      },
+    }));
+
+    try {
+      const deep = await postMcp(app.url, authHeaders(), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ping",
+        params: { _meta: { nested } },
+      });
+      const batched = await postMcp(app.url, authHeaders(), batch);
+
+      expect(deep.status).toBe(413);
+      expect(batched.status).toBe(413);
+    } finally {
       await app.close();
     }
   });
