@@ -102,6 +102,11 @@ export type TweetApiMcpServerOptions = {
   liveTools?: LiveToolsOptions;
 };
 
+// Most array elements plus object keys one tool call's arguments may contain. The SDK counts them
+// before schema validation, so an oversized input cannot use up memory while it is validated
+// (CVE-2026-111768). The largest real input, 200 post IDs, is about 205.
+export const MAX_TOOL_INPUT_ELEMENTS = 1_000;
+
 export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}): McpServer {
   const docsService = options.docsService ?? new TweetApiDocsService();
   const server = new McpServer(
@@ -110,6 +115,7 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
       version: "0.1.0",
     },
     {
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
       instructions:
         "Use this server to inspect TweetAPI docs and, when live tools are enabled, make bounded read-only TweetAPI requests through a dashboard-backed MCP grant. Hosted HTTP clients use MCP OAuth bearer tokens; local stdio live mode reads TWEETAPI_API_KEY. Live data tools usually cost 1 API unit per call; tweetapi_account_usage is free and shows the units left. Pass responseFormat compact for smaller results, and post or profile links where a tool accepts them.",
     }

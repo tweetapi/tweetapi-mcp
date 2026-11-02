@@ -18,6 +18,7 @@ import {
   REQUIRED_MCP_SCOPE,
   signMcpAccessTokenForTesting,
 } from "./mcp-auth.js";
+import { MAX_TOOL_INPUT_ELEMENTS } from "./server.js";
 
 const TEST_JWT_SECRET = "test-mcp-oauth-secret";
 const TEST_INTERNAL_TOKEN = "test-dashboard-internal-token";
@@ -579,6 +580,67 @@ describe("hosted MCP HTTP server", () => {
         "X-TweetAPI-Client": "hosted-mcp",
       });
       expect(authFetch).toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it("rejects tool arguments over the element limit before schema validation", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { tweets: [] } })));
+    const app = await listen(
+      protectedOptions({ apiBaseUrl: "https://api.example.test", fetch: fetchMock })
+    );
+    const client = await connectClient(app.url, authHeaders());
+    // The `ids` key counts as one element, so 999 IDs is exactly at the limit.
+    const atLimit = Array.from({ length: MAX_TOOL_INPUT_ELEMENTS - 1 }, () => "1");
+    const overLimit = [...atLimit, "1"];
+    const text = (result: Awaited<ReturnType<typeof client.callTool>>) =>
+      result.content[0]?.type === "text" ? result.content[0].text : "";
+
+    try {
+      const rejected = await client.callTool({
+        name: "tweetapi_tweet_details_by_ids",
+        arguments: { ids: overLimit },
+      });
+      const validated = await client.callTool({
+        name: "tweetapi_tweet_details_by_ids",
+        arguments: { ids: atLimit },
+      });
+
+      expect(rejected.isError).toBe(true);
+      expect(text(rejected)).toContain(
+        `arguments contain more than the maximum of ${MAX_TOOL_INPUT_ELEMENTS} elements`
+      );
+      expect(text(rejected)).not.toContain("Input validation error");
+      // At the limit the input reaches schema validation, which caps the batch at 200.
+      expect(validated.isError).toBe(true);
+      expect(text(validated)).toContain("Input validation error");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it("keeps the largest real input, 200 post IDs, within the element limit", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { tweets: [] } })));
+    const app = await listen(
+      protectedOptions({ apiBaseUrl: "https://api.example.test", fetch: fetchMock })
+    );
+    const client = await connectClient(app.url, authHeaders());
+
+    try {
+      const result = await client.callTool({
+        name: "tweetapi_tweet_details_by_ids",
+        arguments: {
+          ids: Array.from({ length: 200 }, (_, index) => String(1_000 + index)),
+          responseFormat: "compact",
+        },
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
     } finally {
       await client.close();
       await app.close();
