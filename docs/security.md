@@ -57,6 +57,12 @@ profile, list, community, and Space links are parsed locally: only `x.com` and `
 must name the object type the tool expects. Tools that take a numeric user ID do not look up
 usernames, because that would need a second billed request.
 
+One tool call's arguments may contain at most 1,000 array elements and object keys in total
+(`MAX_TOOL_INPUT_ELEMENTS` in `src/server.ts`). The SDK counts them before schema validation and
+returns a tool error over the limit, so one oversized request cannot use up server memory while it
+is validated (CVE-2026-111768). The largest real input, 200 post IDs, is about 205. Request bodies
+are capped separately by `MCP_MAX_BODY_BYTES`.
+
 ## Errors Across The Two Auth Layers
 
 - MCP OAuth problems (missing, expired, wrong-audience, wrong-scope, or revoked grants) fail the
