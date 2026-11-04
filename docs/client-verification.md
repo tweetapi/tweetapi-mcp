@@ -23,12 +23,12 @@ behavior, or how a given client renders results.
 
 ## Not Verified For This Release
 
-Nobody has run these clients against the hosted server with this release. Do not claim they work
-until each row is checked.
+Only the checks under [Recorded Checks](#recorded-checks) have been run against the hosted server.
+Do not claim a client works until its row is checked.
 
 | Client                     | Setup source                                        | Status for this release |
 | -------------------------- | --------------------------------------------------- | ----------------------- |
-| Claude Code                | `claude mcp add` + `claude mcp login` (public docs) | Not re-verified         |
+| Claude Code                | `claude mcp add` + `claude mcp login` (public docs) | Partly checked on 0.3.0 |
 | Codex CLI                  | `codex mcp add` + `codex mcp login` (public docs)   | Not re-verified         |
 | Cursor                     | `~/.cursor/mcp.json` (public docs)                  | Not re-verified         |
 | Claude.ai / Claude Desktop | Custom connector with the server URL                | Never verified          |
@@ -59,3 +59,23 @@ usage check is free.
    Expect a tool error saying MCP sign-in worked but the key was not accepted, and no sign-in loop.
 
 Record the client version, date, and result in the table above when a row is checked.
+
+## Recorded Checks
+
+### 2026-11-04: Claude Code, hosted server 0.3.0
+
+An agent in a new Claude Code session ran the check against `https://mcp.tweetapi.com/mcp`, reusing
+an existing sign-in. The exact Claude Code version was not recorded. No person looked at the client
+UI.
+
+- Checked:
+  - Step 2: the tool list had 52 tools, 47 live and 5 docs, including `tweetapi_account_usage`.
+  - Step 3 in part: `tweetapi_account_usage` ran before and after the live calls. Its units were not
+    compared with the dashboard.
+  - Each of the 13 tools added in 0.3.0 made a real call and returned real data, with
+    `cost.estimatedUnits: 1`. Post links and a community link resolved, with
+    `resolvedInput.*.source: "link"`.
+  - `tweetapi_trends` with both `country` and `woeid` returned `TWEETAPI_INVALID_INPUT` without a
+    request.
+- Not repeated: sign-in (step 1), post details from a link (step 5), how the client shows results
+  (step 6), refresh (step 7), revoke (step 8), and a key without a plan or balance (step 9).
