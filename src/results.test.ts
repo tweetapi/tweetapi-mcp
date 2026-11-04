@@ -639,6 +639,60 @@ describe("pagination and completeness", () => {
     expect(withoutCursor.note).toContain("does not prove the list is complete");
   });
 
+  it("warns when an empty page still carries a cursor, without claiming it is the end", () => {
+    // Seen live: an Articles page with no posts and a nextCursor. X often sends a cursor at the
+    // end of a feed, but its docs say an empty page is not always the last one.
+    const emptyWithCursor = buildCompleteness({
+      paginated: true,
+      kind: "tweets",
+      result: { data: [], pagination: { nextCursor: "c" } },
+      nextCursor: "c",
+    });
+
+    expect(emptyWithCursor).toMatchObject({
+      scope: "page",
+      nextCursor: "c",
+      moreAvailable: true,
+      itemCount: 0,
+    });
+    expect(emptyWithCursor.note).toMatch(/empty/);
+    expect(emptyWithCursor.note).toMatch(/also empty, stop/);
+    expect(emptyWithCursor.note).toMatch(/billed/);
+  });
+
+  it("counts trends and describes unpaginated lists without calling them one object", () => {
+    const trends = buildCompleteness({
+      paginated: false,
+      result: {
+        data: {
+          location: { woeid: 1, name: "Worldwide" },
+          trends: [{ name: "#AI" }, { name: "Texas" }, { name: "Trump" }],
+        },
+      },
+      nextCursor: null,
+    });
+    const similar = buildCompleteness({
+      paginated: false,
+      kind: "users",
+      result: { data: [user(), user({ id: "2" })] },
+      nextCursor: null,
+    });
+    const profile = buildCompleteness({
+      paginated: false,
+      kind: "user",
+      result: { data: user() },
+      nextCursor: null,
+    });
+
+    expect(trends).toMatchObject({ scope: "single", itemCount: 3 });
+    expect(similar).toMatchObject({ scope: "single", itemCount: 2 });
+    expect(profile).toMatchObject({ scope: "single", itemCount: null });
+    for (const completeness of [trends, similar, profile]) {
+      expect(completeness.note).not.toContain("One object");
+      expect(completeness.note).toMatch(/not paginated/i);
+    }
+  });
+
   it("lists requested posts that came back null, by position", () => {
     const completeness = buildCompleteness({
       paginated: false,

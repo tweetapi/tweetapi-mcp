@@ -89,6 +89,10 @@ describe("TweetAPI MCP server", () => {
         name: "tweetapi-mcp",
         version: pkg.version,
       });
+      // Users inside posts and lists lack some profile fields; the instructions say where to
+      // get the full values.
+      expect(connection.client.getInstructions()).toContain("listedCount 0");
+      expect(connection.client.getInstructions()).toContain("tweetapi_user_by_username");
     } finally {
       await connection.close();
     }

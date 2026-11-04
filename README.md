@@ -116,6 +116,8 @@ API key.
   `result.tweet.textTruncated`.
 - On the four X v1.1 follower and following ID and list tools, a `nextCursor` of `"0"` means the
   last page. `pagination` keeps the `"0"`, and `completeness` reports no next cursor.
+- An empty page that still has a `nextCursor` says so in `completeness.note`. X often sends a cursor
+  at the end of a feed, so if the next page is empty too, stop: empty pages are billed.
 - Post, profile, list, community, and Space fields accept the matching `x.com` or `twitter.com`
   link, and username fields accept `@handles`. See `src/identifiers.ts` for the exact rules.
 - `tweetapi_trends` takes `country` or `woeid`, not both. Sending both is rejected before any
