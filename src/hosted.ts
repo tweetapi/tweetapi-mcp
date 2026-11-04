@@ -18,6 +18,12 @@ import { createTweetApiMcpServer } from "./server.js";
 const DEFAULT_PORT = 3100;
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+// Most array elements plus object keys one MCP request may contain, counted across the whole
+// JSON-RPC body (any method, batches included) before the SDK validates it. The SDK's tool limit
+// only covers tool arguments; without this, a 1 MB prompts/get or initialize request could use
+// gigabytes of memory while it is validated. It sits above MAX_TOOL_INPUT_ELEMENTS plus the
+// JSON-RPC envelope, so an oversized tool call still gets the tool error.
+export const MAX_REQUEST_ELEMENTS = 2_000;
 const DEFAULT_RATE_LIMIT = 300;
 const DEFAULT_INVALID_AUTH_RATE_LIMIT = 30;
 const DEFAULT_GLOBAL_RATE_LIMIT = 3000;
@@ -234,7 +240,7 @@ export function createHostedMcpRequestHandler(options: HostedMcpServerOptions = 
       await mcpServer.connect(transport);
       await transport.handleRequest(req, res, parsedBody);
     } catch (error) {
-      if (error instanceof BodyTooLargeError) {
+      if (error instanceof BodyTooLargeError || error instanceof TooManyElementsError) {
         sendJsonRpcError(res, 413, -32000, error.message);
         return;
       }
@@ -308,16 +314,56 @@ async function readJsonBody(req: IncomingMessage, maxBodyBytes: number) {
     return undefined;
   }
 
+  let body: unknown;
   try {
-    return JSON.parse(text) as unknown;
+    body = JSON.parse(text) as unknown;
   } catch {
     throw new InvalidJsonError();
   }
+
+  if (countJsonElements(body, MAX_REQUEST_ELEMENTS) > MAX_REQUEST_ELEMENTS) {
+    throw new TooManyElementsError(MAX_REQUEST_ELEMENTS);
+  }
+
+  return body;
+}
+
+// Counts array elements and object keys in parsed JSON, stopping once the total passes `max`.
+// Uses an explicit stack, so deep nesting cannot overflow the call stack.
+function countJsonElements(value: unknown, max: number) {
+  let count = 0;
+  const stack = [value];
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || typeof node !== "object") {
+      continue;
+    }
+
+    const children = Array.isArray(node) ? node : Object.values(node);
+    for (const child of children) {
+      count += 1;
+      if (count > max) {
+        return count;
+      }
+      if (child !== null && typeof child === "object") {
+        stack.push(child);
+      }
+    }
+  }
+
+  return count;
 }
 
 class BodyTooLargeError extends Error {
   constructor(limit: number) {
     super(`MCP request body exceeds ${limit} bytes.`);
+  }
+}
+
+class TooManyElementsError extends Error {
+  constructor(limit: number) {
+    super(`MCP request body has more than ${limit} JSON array elements and object keys.`);
   }
 }
 
