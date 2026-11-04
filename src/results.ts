@@ -533,6 +533,8 @@ function countItems(kind: CompactKind | undefined, result: unknown): number | nu
   if (kind === "tweetLookup" && isRecord(data) && Array.isArray(data.tweets)) {
     return data.tweets.filter((tweet) => tweet !== null).length;
   }
+  // Trends keep their list next to the location: data.trends.
+  if (isRecord(data) && Array.isArray(data.trends)) return data.trends.length;
 
   return null;
 }
@@ -541,7 +543,9 @@ const PAGE_NOTE =
   "This is one page. A nextCursor means more results may exist: call again with it as cursor. A missing cursor does not prove the list is complete, because X can cap or hide results.";
 const BATCH_NOTE =
   "Requested items in notReturned came back missing. X does not say why: they may be deleted, suspended, protected, renamed, or never existed.";
-const SINGLE_NOTE = "One object, returned as TweetAPI sent it at retrievedAt.";
+const EMPTY_PAGE_NOTE =
+  "This page is empty, but TweetAPI returned a nextCursor. X often sends one at the end of a feed, though an empty page is not always the last. If you call again with it and that page is also empty, stop: each call is billed even when it returns nothing.";
+const SINGLE_NOTE = "Not paginated: one response, returned as TweetAPI sent it at retrievedAt.";
 const END_CURSOR_NOTE =
   'This is the last page: TweetAPI returned nextCursor "0", which this X endpoint uses to mean there are no more pages. Do not call again with it.';
 
@@ -573,7 +577,12 @@ export function buildCompleteness(options: {
       nextCursor: options.nextCursor,
       moreAvailable: options.nextCursor !== null,
       itemCount,
-      note: options.endCursor !== undefined ? END_CURSOR_NOTE : PAGE_NOTE,
+      note:
+        options.endCursor !== undefined
+          ? END_CURSOR_NOTE
+          : itemCount === 0 && options.nextCursor !== null
+            ? EMPTY_PAGE_NOTE
+            : PAGE_NOTE,
     };
   }
 

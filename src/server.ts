@@ -112,12 +112,12 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
   const server = new McpServer(
     {
       name: "tweetapi-mcp",
-      version: "0.3.0",
+      version: "0.3.1",
     },
     {
       maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
       instructions:
-        "Use this server to inspect TweetAPI docs and, when live tools are enabled, make bounded read-only TweetAPI requests through a dashboard-backed MCP grant. Hosted HTTP clients use MCP OAuth bearer tokens; local stdio live mode reads TWEETAPI_API_KEY. Live data tools usually cost 1 API unit per call; tweetapi_account_usage is free and shows the units left. Pass responseFormat compact for smaller results, and post or profile links where a tool accepts them.",
+        "Use this server to inspect TweetAPI docs and, when live tools are enabled, make bounded read-only TweetAPI requests through a dashboard-backed MCP grant. Hosted HTTP clients use MCP OAuth bearer tokens; local stdio live mode reads TWEETAPI_API_KEY. Live data tools usually cost 1 API unit per call; tweetapi_account_usage is free and shows the units left. Pass responseFormat compact for smaller results, and post or profile links where a tool accepts them. Users inside posts and account lists can show listedCount 0, isIdentityVerified false and verifiedSince null because X leaves those details out there; use tweetapi_user_by_id or tweetapi_user_by_username when they matter.",
     }
   );
 
