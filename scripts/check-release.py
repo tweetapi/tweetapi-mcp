@@ -70,6 +70,7 @@ EXPECTED_TOOLS = {
 EXPECTED_HTTP_TOOLS = EXPECTED_TOOLS | {
     "tweetapi_search",
     "tweetapi_user_by_username",
+    "tweetapi_account_usage",
 }
 EXPECTED_RESOURCES = {
     "tweetapi://docs/llms",
@@ -215,7 +216,8 @@ def check_hosted_mcp_smoke() -> None:
         sys.stderr.write(result.stderr)
         fail("MCP hosted HTTP smoke check failed")
 
-    output = json.loads(result.stdout)
+    # The hosted server logs each initialize to stdout; the smoke result is the last line.
+    output = json.loads(result.stdout.strip().splitlines()[-1])
     tools = set(output.get("tools", []))
     resources = set(output.get("resources", []))
     if not EXPECTED_HTTP_TOOLS.issubset(tools):

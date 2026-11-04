@@ -10,6 +10,17 @@
 - Keep each live tool call to one upstream API request with no auto-pagination.
 - Require dashboard-issued MCP OAuth tokens for hosted MCP access.
 
+## Implemented: Results, Usage, Links, And Errors (First Release)
+
+- Optional compact results with an output schema, `retrievedAt`, completeness, omitted-field lists,
+  and unit cost estimates on every live result.
+- Free `tweetapi_account_usage` tool for the API key behind the current grant.
+- Post, profile, list, community, and Space links and `@handles` parsed locally, without extra
+  requests.
+- Clearer errors that separate MCP OAuth failures from TweetAPI API key, quota, rate-limit, and
+  upstream failures, with `Retry-After` when available.
+- Remaining real-client checks are tracked in `docs/client-verification.md`.
+
 ## Dashboard Docs Handoff
 
 - Customer-facing agent setup docs belong in the TweetAPI dashboard/docs repo.

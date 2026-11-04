@@ -286,6 +286,258 @@ describe("TweetAPI MCP server", () => {
     }
   });
 
+  it("lists cost, response formats, and link inputs in the tool catalog", async () => {
+    const connection = await connectServer();
+
+    try {
+      const result = await connection.client.callTool({
+        name: "tweetapi_tool_catalog",
+        arguments: { category: "account" },
+      });
+      const catalog = JSON.parse(
+        result.content[0]?.type === "text" ? result.content[0].text : "{}"
+      );
+
+      expect(catalog.tools).toEqual([
+        expect.objectContaining({
+          name: "tweetapi_account_usage",
+          endpoint: { method: "GET", path: "/tw-v2/account/usage" },
+          cost: expect.objectContaining({ basis: "estimate", unitsPerSuccessfulCall: 0 }),
+          responseFormats: ["full"],
+          linkInputs: [],
+        }),
+      ]);
+
+      const details = await connection.client.callTool({
+        name: "tweetapi_tool_catalog",
+        arguments: { toolName: "tweetapi_tweet_details" },
+      });
+      const detailsCatalog = JSON.parse(
+        details.content[0]?.type === "text" ? details.content[0].text : "{}"
+      );
+
+      expect(detailsCatalog.tools[0]).toMatchObject({
+        cost: { unitsPerSuccessfulCall: 1 },
+        responseFormats: ["full", "compact"],
+        linkInputs: ["tweetId"],
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("passes SDK output-schema validation for compact and full results of every compact tool", async () => {
+    const tweet = { id: "1", text: "t", author: { id: "2", username: "jack" } };
+    const user = { id: "2", username: "jack", name: "jack" };
+    const bodies: Record<string, unknown> = {
+      "/tw-v2/user/by-username": { data: user },
+      "/tw-v2/user/by-id": { data: user },
+      "/tw-v2/tweet/details": { data: { tweet, ancestors: [], replies: [tweet] } },
+      "/tw-v2/tweet/details-by-ids": { data: { tweets: [tweet, null] } },
+      "/tw-v2/community/members": { data: [{ user, role: "member" }] },
+      "/tw-v2/search": { data: [{ type: "tweet", content: tweet }], pagination: {} },
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname;
+      const body =
+        bodies[path] ??
+        (/(tweets|quotes|replies)$/.test(path)
+          ? { data: [tweet], pagination: { nextCursor: "n", prevCursor: null } }
+          : { data: [user], pagination: { nextCursor: null, prevCursor: null } });
+      return new Response(JSON.stringify(body));
+    });
+    const connection = await connectServer({
+      live: true,
+      liveTools: {
+        apiKey: "YOUR_API_KEY",
+        apiBaseUrl: "https://api.example.test",
+        fetch: fetchMock,
+      },
+    });
+    const args: Record<string, unknown> = {
+      username: "@jack",
+      usernames: ["jack"],
+      userId: "2",
+      userIds: ["2"],
+      query: "q",
+      type: "Top",
+      tweetId: "https://x.com/jack/status/1",
+      ids: ["1", "3"],
+      listId: "1",
+      communityId: "https://x.com/i/communities/1",
+    };
+
+    try {
+      const { tools } = await connection.client.listTools();
+
+      for (const tool of tools) {
+        const properties = Object.keys(
+          (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {}
+        );
+        if (!properties.includes("responseFormat")) continue;
+
+        for (const responseFormat of ["full", "compact"]) {
+          const toolArgs = Object.fromEntries(
+            properties.filter((field) => field in args).map((field) => [field, args[field]])
+          );
+          const result = await connection.client.callTool({
+            name: tool.name,
+            arguments: { ...toolArgs, responseFormat },
+          });
+
+          expect(result.isError, `${tool.name} ${responseFormat}`).toBeUndefined();
+          expect(result.structuredContent, tool.name).toMatchObject({
+            output: { format: responseFormat },
+          });
+        }
+      }
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("reports the metrics projection in the catalog and returns that format", async () => {
+    const focal = {
+      id: "1985432109876543219",
+      text: "Launch day",
+      createdAt: "Mon Oct 27 12:00:00 +0000 2026",
+      author: { id: "44196397", username: "elonmusk", name: "Elon Musk" },
+      likeCount: 1200,
+      retweetCount: 300,
+      replyCount: 80,
+      quoteCount: 20,
+      bookmarkCount: 45,
+      viewCount: 98000,
+    };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: { tweet: focal, ancestors: [], replies: [] } }))
+    );
+    const connection = await connectServer({
+      live: true,
+      liveTools: {
+        apiKey: "YOUR_API_KEY",
+        apiBaseUrl: "https://api.example.test",
+        fetch: fetchMock,
+      },
+    });
+
+    try {
+      const catalogResult = await connection.client.callTool({
+        name: "tweetapi_tool_catalog",
+        arguments: { toolName: "tweetapi_tweet_metrics" },
+      });
+      const catalog = JSON.parse(
+        catalogResult.content[0]?.type === "text" ? catalogResult.content[0].text : "{}"
+      );
+      const entry = catalog.tools[0];
+
+      expect(entry.responseFormats).toEqual(["metrics"]);
+      expect(entry.inputSchema.properties).not.toHaveProperty("responseFormat");
+
+      // listTools first so the SDK client validates structuredContent against the output schema.
+      await connection.client.listTools();
+      const result = await connection.client.callTool({
+        name: "tweetapi_tweet_metrics",
+        arguments: { tweetId: "https://x.com/elonmusk/status/1985432109876543219" },
+      });
+      const structured = result.structuredContent as { output: { format: string } };
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(entry.responseFormats).toContain(structured.output.format);
+      expect(
+        JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : "{}")
+      ).toEqual(structured);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("keeps post disclosure flags in compact results and leaves full results unchanged", async () => {
+    const focal = {
+      id: "1985432109876543219",
+      text: "Generated render of the launch site",
+      createdAt: "Mon Oct 27 12:00:00 +0000 2026",
+      author: { id: "44196397", username: "elonmusk", name: "Elon Musk" },
+      mentions: [{ id: "783214", username: "X", name: "X" }],
+      media: [
+        {
+          id: "1985432109876500001",
+          key: "3_1985432109876500001",
+          type: "photo",
+          url: "https://pbs.twimg.com/media/Gabc.jpg",
+          thumbnailUrl: "https://pbs.twimg.com/media/Gabc.jpg",
+          sizes: { large: { w: 1200, h: 800 } },
+        },
+      ],
+      hasAIGeneratedMedia: true,
+      isPaidPromotion: false,
+      limitedActions: "non_compliant",
+      isTranslatable: true,
+      translatedText: null,
+    };
+    const body = { data: { tweet: focal, ancestors: [], replies: [] } };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body)));
+    const connection = await connectServer({
+      live: true,
+      liveTools: {
+        apiKey: "YOUR_API_KEY",
+        apiBaseUrl: "https://api.example.test",
+        fetch: fetchMock,
+      },
+    });
+
+    try {
+      await connection.client.listTools();
+      const compact = await connection.client.callTool({
+        name: "tweetapi_tweet_details",
+        arguments: { tweetId: focal.id, responseFormat: "compact" },
+      });
+      const structured = compact.structuredContent as {
+        output: { fieldsOmitted: string[] };
+        result: { tweet: Record<string, unknown> };
+      };
+
+      expect(compact.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(
+        JSON.parse(compact.content[0]?.type === "text" ? compact.content[0].text : "{}")
+      ).toEqual(structured);
+      expect(structured.result.tweet).toMatchObject({
+        hasAIGeneratedMedia: true,
+        isPaidPromotion: false,
+        limitedActions: "non_compliant",
+        isTranslatable: true,
+        translatedText: null,
+        mentions: [{ id: "783214", username: "X", name: "X" }],
+        media: [
+          {
+            id: "1985432109876500001",
+            key: "3_1985432109876500001",
+            thumbnailUrl: "https://pbs.twimg.com/media/Gabc.jpg",
+          },
+        ],
+      });
+      expect(structured.output.fieldsOmitted.join(" ")).toContain(
+        "hasAIGeneratedMedia and isPaidPromotion disclosures are kept"
+      );
+
+      const full = await connection.client.callTool({
+        name: "tweetapi_tweet_details",
+        arguments: { tweetId: focal.id },
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(full.structuredContent).toMatchObject({
+        output: { format: "full", fieldsOmitted: [] },
+      });
+      expect((full.structuredContent as { result: unknown }).result).toEqual(body);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("returns a missing-key error when live mode is enabled without local env", async () => {
     vi.stubEnv("TWEETAPI_API_KEY", "");
     const connection = await connectServer({ live: true });

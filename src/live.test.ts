@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createLiveToolDefinitions, LIVE_TOOL_ENDPOINTS, resolveTweetApiBaseUrl } from "./live.js";
+import {
+  createLiveToolDefinitions,
+  LIVE_TOOL_ENDPOINTS,
+  LIVE_TOOL_OUTPUT_SCHEMA,
+  parseRetryAfter,
+  resolveTweetApiBaseUrl,
+  type LiveToolsOptions,
+} from "./live.js";
+import { z } from "zod";
 
 function parseToolJson(result: { content: { type: "text"; text: string }[] }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
@@ -15,7 +23,7 @@ describe("live TweetAPI tool definitions", () => {
     const names = LIVE_TOOL_ENDPOINTS.map((tool) => tool.name);
     const paths = LIVE_TOOL_ENDPOINTS.map((tool) => tool.path);
 
-    expect(names).toHaveLength(33);
+    expect(names).toHaveLength(34);
     expect(names).toEqual([
       "tweetapi_user_by_username",
       "tweetapi_user_by_usernames",
@@ -50,6 +58,7 @@ describe("live TweetAPI tool definitions", () => {
       "tweetapi_community_search",
       "tweetapi_space_by_id",
       "tweetapi_space_stream_url",
+      "tweetapi_account_usage",
     ]);
     expect(paths.some((path) => path.includes("/internal/"))).toBe(false);
     expect(paths.some((path) => path.includes("/auth/"))).toBe(false);
@@ -58,6 +67,15 @@ describe("live TweetAPI tool definitions", () => {
     expect(paths.some((path) => path.includes("/xchat/"))).toBe(false);
     expect(paths.some((path) => path.includes("/tweet/create"))).toBe(false);
     expect(paths.some((path) => path.includes("/follow-user"))).toBe(false);
+    // The only account route is the read-only usage check for the connection's own key.
+    expect(paths.filter((path) => path.startsWith("/tw-v2/account"))).toEqual([
+      "/tw-v2/account/usage",
+    ]);
+    expect(
+      LIVE_TOOL_ENDPOINTS.every(
+        (tool) => tool.method === "GET" || tool.path === "/tw-v2/tweet/translate"
+      )
+    ).toBe(true);
   });
 
   it("accepts batches of up to 100 users, matching the TweetAPI batch limit", () => {
@@ -79,8 +97,19 @@ describe("live TweetAPI tool definitions", () => {
     }
   });
 
-  it("does not expose account-secret input fields", () => {
-    const forbidden = new Set(["authToken", "ct0", "proxy", "password", "cookie", "cookies"]);
+  it("does not expose account-secret or credential input fields", () => {
+    const forbidden = new Set([
+      "authToken",
+      "ct0",
+      "proxy",
+      "password",
+      "cookie",
+      "cookies",
+      "apiKey",
+      "api_key",
+      "key",
+      "token",
+    ]);
 
     for (const endpoint of LIVE_TOOL_ENDPOINTS) {
       for (const field of Object.keys(endpoint.inputSchema)) {
@@ -351,5 +380,593 @@ describe("live TweetAPI tool definitions", () => {
     vi.stubEnv("NODE_ENV", "test");
 
     expect(resolveTweetApiBaseUrl("https://api.example.test")).toBe("https://api.example.test/");
+  });
+});
+
+const LONG_ID = "1985432109876543219";
+const FIXED_NOW = new Date("2026-10-28T12:00:00.000Z");
+const outputSchema = z.object(LIVE_TOOL_OUTPUT_SCHEMA);
+
+function jsonResponse(body: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+}
+
+function setup(name: string, response: () => Response, options: Partial<LiveToolsOptions> = {}) {
+  const fetchMock = vi.fn(async () => response());
+  const tool = createLiveToolDefinitions({
+    apiKey: "YOUR_API_KEY",
+    apiBaseUrl: "https://api.example.test",
+    fetch: fetchMock,
+    now: () => FIXED_NOW,
+    ...options,
+  }).find((candidate) => candidate.name === name);
+
+  if (!tool) {
+    throw new Error(`tool not found: ${name}`);
+  }
+
+  return { tool, fetchMock };
+}
+
+function requestedUrl(fetchMock: ReturnType<typeof vi.fn>) {
+  return String((fetchMock.mock.calls[0] as [URL, RequestInit])[0]);
+}
+
+function sampleTweet(id: string, text = "post text") {
+  return {
+    id,
+    text,
+    createdAt: "Mon Oct 27 12:00:00 +0000 2026",
+    author: { id: "12", username: "jack", name: "jack", bio: "long bio", banner: "b.jpg" },
+    likeCount: 1,
+    retweetCount: 0,
+    replyCount: 0,
+    quoteCount: 0,
+    bookmarkCount: 0,
+    viewCount: 10,
+    editControl: { editTweetIds: [id] },
+  };
+}
+
+describe("live tool results", () => {
+  it("returns identical structured and text content that matches the output schema", async () => {
+    const { tool } = setup("tweetapi_search", () =>
+      jsonResponse({ data: [sampleTweet("1")], pagination: { nextCursor: "n", prevCursor: null } })
+    );
+
+    const result = await tool.handler({ query: "tweetapi", type: "Latest" });
+
+    expect(result.structuredContent).toBeDefined();
+    expect(parseToolJson(result as never)).toEqual(
+      JSON.parse(JSON.stringify(result.structuredContent))
+    );
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      retrievedAt: "2026-10-28T12:00:00.000Z",
+      pagination: { nextCursor: "n", prevCursor: null },
+      completeness: { scope: "page", nextCursor: "n", moreAvailable: true, itemCount: 1 },
+      output: { format: "full", fieldsOmitted: [], itemsOmitted: 0, textTruncated: false },
+      cost: { basis: "estimate", estimatedUnits: 1 },
+    });
+  });
+
+  it("keeps full responses unchanged by default and never forwards responseFormat", async () => {
+    const upstream = {
+      data: [sampleTweet("1")],
+      pagination: { nextCursor: null, prevCursor: null },
+    };
+    const full = setup("tweetapi_user_tweets", () => jsonResponse(upstream));
+    const compact = setup("tweetapi_user_tweets", () => jsonResponse(upstream));
+
+    const fullResult = await full.tool.handler({ userId: "12" });
+    const compactResult = await compact.tool.handler({ userId: "12", responseFormat: "compact" });
+
+    expect(fullResult.structuredContent?.result).toEqual(upstream);
+    expect(requestedUrl(compact.fetchMock)).toBe(
+      "https://api.example.test/tw-v2/user/tweets?userId=12"
+    );
+    expect(compactResult.structuredContent).toMatchObject({
+      output: { format: "compact", itemsOmitted: 0, textTruncated: false },
+      completeness: { moreAvailable: false, itemCount: 1 },
+      result: {
+        tweets: [
+          {
+            id: "1",
+            url: "https://x.com/jack/status/1",
+            text: "post text",
+            createdAt: "Mon Oct 27 12:00:00 +0000 2026",
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(compactResult.structuredContent?.result)).not.toContain("long bio");
+    expect(outputSchema.safeParse(compactResult.structuredContent).success).toBe(true);
+  });
+
+  it("reports the tweet details reply cursor (regression: it used to be dropped)", async () => {
+    const { tool } = setup("tweetapi_tweet_details", () =>
+      jsonResponse({
+        data: { tweet: sampleTweet("1"), ancestors: [], replies: [], nextCursor: "reply-cursor" },
+      })
+    );
+
+    const result = await tool.handler({ tweetId: "1", sortBy: "Relevance" });
+
+    expect(result.structuredContent).toMatchObject({
+      pagination: { nextCursor: "reply-cursor" },
+      completeness: { nextCursor: "reply-cursor", moreAvailable: true },
+    });
+  });
+
+  it("accepts a post link, forwards only the numeric ID, and reports the conversion", async () => {
+    const { tool, fetchMock } = setup("tweetapi_tweet_details", () =>
+      jsonResponse({ data: { tweet: sampleTweet(LONG_ID), ancestors: [], replies: [] } })
+    );
+
+    const result = await tool.handler({
+      tweetId: `https://twitter.com/jack/status/${LONG_ID}?s=20`,
+      sortBy: "Relevance",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(requestedUrl(fetchMock)).toBe(
+      `https://api.example.test/tw-v2/tweet/details?tweetId=${LONG_ID}&sortBy=Relevance`
+    );
+    expect(result.structuredContent?.resolvedInput).toEqual({
+      tweetId: { value: LONG_ID, source: "link" },
+    });
+  });
+
+  it("accepts @handles and profile links for usernames", async () => {
+    const { tool, fetchMock } = setup("tweetapi_user_by_usernames", () =>
+      jsonResponse({ data: [{ id: "12", username: "jack" }] })
+    );
+
+    const result = await tool.handler({ usernames: ["@jack", "https://x.com/Gone_Account"] });
+
+    expect(requestedUrl(fetchMock)).toBe(
+      "https://api.example.test/tw-v2/user/by-usernames?usernames=jack%2CGone_Account"
+    );
+    expect(result.structuredContent?.completeness).toMatchObject({
+      scope: "batch",
+      requestedCount: 2,
+      itemCount: 1,
+      notReturned: ["Gone_Account"],
+    });
+  });
+
+  it("reports posts a batch lookup could not load", async () => {
+    const { tool, fetchMock } = setup("tweetapi_tweet_details_by_ids", () =>
+      jsonResponse({ data: { tweets: [sampleTweet("1"), null] } })
+    );
+
+    const result = await tool.handler({ ids: `1,https://x.com/i/status/${LONG_ID}` });
+
+    expect(requestedUrl(fetchMock)).toBe(
+      `https://api.example.test/tw-v2/tweet/details-by-ids?ids=1%2C${LONG_ID}`
+    );
+    expect(result.structuredContent?.completeness).toMatchObject({ notReturned: [LONG_ID] });
+  });
+
+  it.each([
+    ["tweetapi_tweet_details", { tweetId: "https://x.com/jack" }, "tweetId", /profile link/],
+    [
+      "tweetapi_tweet_metrics",
+      { tweetId: "https://evil.example/jack/status/1" },
+      "tweetId",
+      /x.com/,
+    ],
+    [
+      "tweetapi_user_by_username",
+      { username: `https://x.com/jack/status/${LONG_ID}` },
+      "username",
+      /post link/,
+    ],
+    [
+      "tweetapi_list_details",
+      { listId: "https://x.com/i/communities/1" },
+      "listId",
+      /community link/,
+    ],
+    ["tweetapi_tweet_details_by_ids", { ids: ["1", "@jack"] }, "ids[1]", /numeric post ID/],
+  ])(
+    "%s rejects a wrong or unsafe identifier locally without calling TweetAPI",
+    async (name, args, field, message) => {
+      const { tool, fetchMock } = setup(name, () => jsonResponse({ data: null }));
+
+      const result = await tool.handler(args);
+      const body = parseToolJson(result as never) as {
+        error: { code: string; message: string; details: Record<string, unknown> };
+      };
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(body.error.code).toBe("TWEETAPI_INVALID_INPUT");
+      expect(body.error.message).toMatch(message);
+      expect(body.error.details).toMatchObject({
+        layer: "mcp_input",
+        field,
+        cost: { estimatedUnits: 0 },
+      });
+    }
+  );
+
+  it("keeps user-ID tools ID-only instead of resolving usernames with a hidden call", () => {
+    const endpoint = LIVE_TOOL_ENDPOINTS.find((tool) => tool.name === "tweetapi_user_tweets");
+
+    expect(endpoint?.inputSchema.userId.safeParse("jack").success).toBe(false);
+    expect(endpoint?.inputSchema.userId.safeParse(LONG_ID).success).toBe(true);
+  });
+
+  it("flags truncated metrics previews instead of cutting text silently", async () => {
+    const longText = "a".repeat(400);
+    const { tool } = setup("tweetapi_tweet_metrics", () =>
+      jsonResponse({ data: { tweet: sampleTweet("1", longText), replies: [] } })
+    );
+
+    const result = await tool.handler({ tweetId: "https://x.com/jack/status/1" });
+
+    expect(result.structuredContent).toMatchObject({
+      result: {
+        tweet: { url: "https://x.com/jack/status/1", textTruncated: true, textLength: 400 },
+      },
+      cost: { estimatedUnits: 1 },
+    });
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports metrics output metadata that matches the projection for long, short, and missing text", async () => {
+    const cases = [
+      { text: "x".repeat(500), truncated: true, length: 500 },
+      { text: "short post", truncated: false, length: 10 },
+      { text: undefined, truncated: false, length: null },
+    ];
+
+    for (const { text, truncated, length } of cases) {
+      const tweet: Record<string, unknown> = { id: "123", author: { username: "example" } };
+      if (text !== undefined) tweet.text = text;
+      const { tool } = setup("tweetapi_tweet_metrics", () =>
+        jsonResponse({ data: { tweet, ancestors: [], replies: [], nextCursor: null } })
+      );
+
+      const result = await tool.handler({ tweetId: "123" });
+      const structured = result.structuredContent as {
+        output: Record<string, unknown>;
+        result: { tweet: Record<string, unknown> };
+      };
+
+      expect(parseToolJson(result as never)).toEqual(JSON.parse(JSON.stringify(structured)));
+      expect(outputSchema.safeParse(structured).success).toBe(true);
+      expect(structured.output).toMatchObject({
+        format: "metrics",
+        itemsOmitted: 0,
+        textTruncated: truncated,
+      });
+      expect((structured.output.fieldsOmitted as string[]).length).toBeGreaterThan(0);
+      expect(structured.result.tweet).toMatchObject({
+        textTruncated: truncated,
+        textLength: length,
+      });
+      if (truncated) expect(String(structured.result.tweet.textPreview)).toHaveLength(280);
+    }
+  });
+
+  it("keeps metrics output honest when TweetAPI returns no post", async () => {
+    const { tool } = setup("tweetapi_tweet_metrics", () => jsonResponse({ data: { tweet: null } }));
+
+    const result = await tool.handler({ tweetId: "123" });
+
+    expect(result.structuredContent).toMatchObject({
+      output: { format: "metrics", textTruncated: false },
+      result: { tweet: null },
+    });
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("keeps a preview-only article snippet in compact tweet details without calling it the body", async () => {
+    const upstream = {
+      data: {
+        tweet: {
+          id: "123",
+          text: "Read my article",
+          article: {
+            id: "456",
+            title: "Article title",
+            text: "",
+            previewText: "Only available article body snippet",
+          },
+        },
+        ancestors: [],
+        replies: [],
+        nextCursor: null,
+      },
+    };
+    const { tool } = setup("tweetapi_tweet_details", () => jsonResponse(upstream));
+
+    const compact = await tool.handler({ tweetId: "123", responseFormat: "compact" });
+    const full = await tool.handler({ tweetId: "123" });
+
+    expect(compact.structuredContent).toMatchObject({
+      result: {
+        tweet: {
+          article: {
+            id: "456",
+            title: "Article title",
+            text: "",
+            previewText: "Only available article body snippet",
+          },
+        },
+      },
+    });
+    expect(outputSchema.safeParse(compact.structuredContent).success).toBe(true);
+    expect(full.structuredContent?.result).toEqual(upstream);
+  });
+
+  it.each([
+    "tweetapi_user_followers_ids",
+    "tweetapi_user_following_ids",
+    "tweetapi_user_followers_list",
+    "tweetapi_user_following_list",
+  ])('stops %s at the v1.1 end cursor "0" and keeps ordinary cursors', async (name) => {
+    const terminal = { data: ["456"], pagination: { nextCursor: "0", prevCursor: "-1" } };
+    const { tool } = setup(name, () => jsonResponse(terminal));
+
+    const end = await tool.handler({ userId: "12" });
+
+    expect(end.structuredContent).toMatchObject({
+      pagination: { nextCursor: "0", prevCursor: "-1" },
+      completeness: { scope: "page", nextCursor: null, moreAvailable: false },
+      result: terminal,
+    });
+    expect(String((end.structuredContent?.completeness as { note: string }).note)).toContain(
+      "last page"
+    );
+    expect(outputSchema.safeParse(end.structuredContent).success).toBe(true);
+
+    const { tool: nextTool } = setup(name, () =>
+      jsonResponse({
+        data: ["456"],
+        pagination: { nextCursor: "1847291658203946210", prevCursor: "0" },
+      })
+    );
+    const next = await nextTool.handler({ userId: "12" });
+
+    expect(next.structuredContent).toMatchObject({
+      completeness: { nextCursor: "1847291658203946210", moreAvailable: true },
+    });
+  });
+
+  it("keeps opaque GraphQL cursors that start with 0 on other follower tools", async () => {
+    const { tool } = setup("tweetapi_user_followers_v2", () =>
+      jsonResponse({ data: [], pagination: { nextCursor: "0", prevCursor: null } })
+    );
+    const { tool: opaqueTool } = setup("tweetapi_user_followers_v2", () =>
+      jsonResponse({
+        data: [],
+        pagination: { nextCursor: "0|1971852223063261182", prevCursor: null },
+      })
+    );
+
+    expect((await tool.handler({ userId: "12" })).structuredContent).toMatchObject({
+      completeness: { nextCursor: "0", moreAvailable: true },
+    });
+    expect((await opaqueTool.handler({ userId: "12" })).structuredContent).toMatchObject({
+      completeness: { nextCursor: "0|1971852223063261182", moreAvailable: true },
+    });
+  });
+
+  it("makes exactly one upstream request per call for every live tool", async () => {
+    const minimalArgs: Record<string, unknown> = {
+      username: "jack",
+      usernames: "jack",
+      userId: "12",
+      userIds: "12",
+      subjectId: "12",
+      targetId: "13",
+      query: "tweetapi",
+      type: "Latest",
+      tweetId: "1",
+      ids: "1",
+      sortBy: "Relevance",
+      dstLang: "fr",
+      listId: "1",
+      communityId: "1",
+      spaceId: "1ABC",
+      mediaKey: "28_1",
+    };
+
+    for (const endpoint of LIVE_TOOL_ENDPOINTS) {
+      const { tool, fetchMock } = setup(endpoint.name, () => jsonResponse({ data: [] }));
+      const args = Object.fromEntries(
+        Object.keys(endpoint.inputSchema)
+          .filter((field) => field in minimalArgs)
+          .map((field) => [field, minimalArgs[field]])
+      );
+
+      const result = await tool.handler(args);
+
+      expect(result.isError, endpoint.name).toBeUndefined();
+      expect(fetchMock, endpoint.name).toHaveBeenCalledTimes(1);
+      expect(outputSchema.safeParse(result.structuredContent).success, endpoint.name).toBe(true);
+    }
+  });
+});
+
+describe("account usage tool", () => {
+  const usage = {
+    data: {
+      availableUnits: 108766,
+      plan: {
+        active: true,
+        requestLimit: 100000,
+        usedUnits: 1234,
+        remainingUnits: 98766,
+        periodEnd: "2026-11-20T10:00:00.000Z",
+      },
+      payg: { availableUnits: 10000, expiresAt: "2027-10-21T10:00:00.000Z" },
+      rateLimit: { requestsPerMinute: 60 },
+    },
+  };
+
+  it("reads the connection's own usage with one free GET and no inputs", async () => {
+    const { tool, fetchMock } = setup("tweetapi_account_usage", () => jsonResponse(usage));
+
+    const result = await tool.handler({});
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe("https://api.example.test/tw-v2/account/usage");
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      tool: "tweetapi_account_usage",
+      retrievedAt: "2026-10-28T12:00:00.000Z",
+      cost: { basis: "estimate", estimatedUnits: 0 },
+      completeness: { scope: "single" },
+      usageDocs: "https://tweetapi.com/docs/account/usage",
+      result: usage,
+    });
+    expect(String(result.structuredContent?.notice)).toContain("0 units");
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("ignores any attempt to pass another key or user", async () => {
+    const { tool, fetchMock } = setup("tweetapi_account_usage", () => jsonResponse(usage));
+    const endpoint = LIVE_TOOL_ENDPOINTS.find((item) => item.name === "tweetapi_account_usage");
+
+    expect(Object.keys(endpoint?.inputSchema ?? {})).toEqual([]);
+    await tool.handler({ apiKey: "sk_YOUR_OTHER_KEY", userId: "someone-else" });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe("https://api.example.test/tw-v2/account/usage");
+    expect(init.headers).toMatchObject({ "X-API-Key": "YOUR_API_KEY" });
+  });
+
+  it("returns a retryable error with Retry-After when usage is temporarily unavailable", async () => {
+    const { tool } = setup("tweetapi_account_usage", () =>
+      jsonResponse(
+        { statusCode: 503, message: "Request metering is unavailable" },
+        { status: 503, headers: { "Retry-After": "5" } }
+      )
+    );
+
+    const body = parseToolJson((await tool.handler({})) as never) as {
+      error: { code: string; details: Record<string, unknown> };
+    };
+
+    expect(body.error).toMatchObject({
+      code: "TWEETAPI_UPSTREAM_RETRYABLE",
+      details: { retryable: true, retryAfterSeconds: 5, cost: { estimatedUnits: 0 } },
+    });
+  });
+});
+
+describe("live tool errors", () => {
+  function errorBody(result: unknown) {
+    return parseToolJson(result as never) as {
+      error: { code: string; message: string; details: Record<string, unknown> };
+    };
+  }
+
+  it("separates a rejected TweetAPI key from MCP sign-in", async () => {
+    const { tool } = setup("tweetapi_search", () =>
+      jsonResponse(
+        { statusCode: 401, message: "Invalid API key or no limit configured" },
+        { status: 401 }
+      )
+    );
+
+    const body = errorBody(await tool.handler({ query: "x", type: "Latest" }));
+
+    expect(body.error.code).toBe("TWEETAPI_AUTH_FAILED");
+    expect(body.error.message).toContain("MCP sign-in worked");
+    expect(body.error.details).toMatchObject({
+      layer: "tweetapi_api_key",
+      retryable: false,
+      cost: { estimatedUnits: 0 },
+    });
+  });
+
+  it.each([
+    ["RATE_LIMITED", "rate_limited", true, /per-minute rate limit/],
+    ["QUOTA_EXHAUSTED", "quota_exhausted", false, /units are used up/],
+    ["SUBSCRIPTION_INACTIVE", "subscription_inactive", false, /not active/],
+    [undefined, "unknown", true, /rate limit or quota/],
+  ])("explains a 429 with upstream code %s", async (upstreamCode, reason, retryable, message) => {
+    const { tool } = setup("tweetapi_search", () =>
+      jsonResponse(
+        { statusCode: 429, message: "limit", ...(upstreamCode ? { code: upstreamCode } : {}) },
+        { status: 429, headers: { "Retry-After": "17" } }
+      )
+    );
+
+    const body = errorBody(await tool.handler({ query: "x", type: "Latest" }));
+
+    expect(body.error.code).toBe("TWEETAPI_RATE_LIMITED");
+    expect(body.error.message).toMatch(message);
+    expect(body.error.details).toMatchObject({
+      layer: "tweetapi_api",
+      reason,
+      retryable,
+      retryAfterSeconds: 17,
+      cost: { estimatedUnits: 0 },
+    });
+  });
+
+  it("marks a not-found result as billed and does not guess why it is missing", async () => {
+    const { tool } = setup("tweetapi_tweet_details", () =>
+      jsonResponse({ statusCode: 404, message: "Tweet not found" }, { status: 404 })
+    );
+
+    const body = errorBody(await tool.handler({ tweetId: "1", sortBy: "Relevance" }));
+
+    expect(body.error.code).toBe("TWEETAPI_HTTP_404");
+    expect(body.error.message).toContain("cannot tell which");
+    expect(body.error.details).toMatchObject({ cost: { estimatedUnits: 1 }, retryable: false });
+  });
+
+  it("reports upstream 5xx as retryable without retrying", async () => {
+    const { tool, fetchMock } = setup("tweetapi_search", () =>
+      jsonResponse(
+        { statusCode: 502, message: "Could not reach Twitter. Please retry." },
+        { status: 502 }
+      )
+    );
+
+    const body = errorBody(await tool.handler({ query: "x", type: "Latest" }));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(body.error).toMatchObject({
+      code: "TWEETAPI_UPSTREAM_RETRYABLE",
+      details: { retryable: true, cost: { estimatedUnits: 0 } },
+    });
+  });
+
+  it("reports network failures with an unknown billing outcome", async () => {
+    const { tool } = setup("tweetapi_search", () => {
+      throw new TypeError("fetch failed");
+    });
+
+    const body = errorBody(await tool.handler({ query: "x", type: "Latest" }));
+
+    expect(body.error).toMatchObject({
+      code: "TWEETAPI_REQUEST_FAILED",
+      details: { layer: "network", cost: { estimatedUnits: null } },
+    });
+  });
+
+  it("parses Retry-After seconds and HTTP dates", () => {
+    const now = Date.parse("2026-10-28T12:00:00.000Z");
+
+    expect(parseRetryAfter("5", now)).toBe(5);
+    expect(parseRetryAfter("Wed, 28 Oct 2026 12:00:30 GMT", now)).toBe(30);
+    expect(parseRetryAfter("Wed, 28 Oct 2026 11:00:00 GMT", now)).toBe(0);
+    expect(parseRetryAfter("soon", now)).toBeUndefined();
+    expect(parseRetryAfter(null, now)).toBeUndefined();
+    expect(parseRetryAfter("999999999", now)).toBe(86400);
   });
 });

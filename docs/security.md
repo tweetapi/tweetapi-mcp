@@ -27,7 +27,9 @@ API key. Live tools forward exactly one request to the existing TweetAPI REST AP
 
 The existing API remains responsible for API-key validation, quota, billing, rate limits, usage
 logs, and subscription checks. The hosted MCP service does not store customer keys and does not
-implement account linking, billing, or usage-management tools.
+implement account linking, billing changes, or usage-management tools. The one account tool,
+`tweetapi_account_usage`, is a free read-only `GET /tw-v2/account/usage` for the API key behind the
+current grant. It takes no inputs, so it cannot name another key or user.
 
 Hosted MCP rejects missing, expired, wrong-audience, or wrong-scope bearer tokens before any tool is
 listed or called. The Node service rate limits `/mcp` requests per client and applies a stricter
@@ -44,9 +46,26 @@ dashboard-issued MCP OAuth tokens.
 
 ## Tool Boundary
 
-Hosted MCP live tools are limited to public read-only customer endpoints. They do not expose
-internal routes, hidden endpoints, posting, DMs, follows, profile edits, Twitter/X `authToken`,
-`ct0`, proxy credentials, passwords, cookies, billing, account-management tools, or write actions.
+Hosted MCP live tools are limited to public read-only customer endpoints plus the read-only usage
+check above. They do not expose internal routes, hidden endpoints, posting, DMs, follows, profile
+edits, Twitter/X `authToken`, `ct0`, proxy credentials, passwords, cookies, billing changes,
+account-management tools, or write actions.
+
+Live handlers forward only declared input fields, and they never fetch a URL from tool input. Post,
+profile, list, community, and Space links are parsed locally: only `x.com` and `twitter.com` hosts
+(with `www.` or `mobile.`) are accepted, links with credentials or a port are rejected, and the path
+must name the object type the tool expects. Tools that take a numeric user ID do not look up
+usernames, because that would need a second billed request.
+
+## Errors Across The Two Auth Layers
+
+- MCP OAuth problems (missing, expired, wrong-audience, wrong-scope, or revoked grants) fail the
+  HTTP request with `401` or `403` and a `WWW-Authenticate` challenge, so clients can refresh or
+  sign in again. Resolver outages return `503` without a challenge.
+- TweetAPI API key problems after a valid grant (`401`/`403` from TweetAPI) come back as tool
+  results with `isError: true` and `details.layer: "tweetapi_api_key"`. They must not trigger an
+  OAuth challenge, because signing in again with the same key would not fix them.
+- Tool error details never include the resolved API key.
 
 Authenticated account tools or write-action tools need a separate scoped auth design with scopes,
 revocation, audit logging, quota visibility, redaction behavior, and explicit user confirmations.
