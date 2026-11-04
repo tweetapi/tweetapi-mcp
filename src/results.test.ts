@@ -500,6 +500,58 @@ describe("compactResult", () => {
     expect(compact.members[0]).toMatchObject({ role: "moderator", user: { username: "elonmusk" } });
   });
 
+  it("shapes Lists, keeping identity, counts, dates and the owner but not images", () => {
+    // Field names follow TwitAPI's v3 List transformer.
+    const list = {
+      id: LONG_ID,
+      name: "Space",
+      description: "Rockets and more",
+      mode: "private",
+      memberCount: 120,
+      subscriberCount: 3400,
+      createdAt: "2019-05-01T10:00:00.000Z",
+      owner: user(),
+      bannerUrl: "https://pbs.twimg.com/list_banner_img/1/b.jpg",
+      defaultBannerMedia: { url: "https://pbs.twimg.com/media/d.jpg", width: 1, height: 1 },
+      facepileUrls: ["https://pbs.twimg.com/profile_images/2/f.jpg"],
+      slug: "space",
+      uri: `/i/lists/${LONG_ID}`,
+    };
+    const compact = compactResult("lists", {
+      data: [list, { id: "x", name: "No numeric ID" }],
+    }) as {
+      lists: Array<Record<string, unknown>>;
+    };
+
+    expect(compact.lists).toHaveLength(2);
+    expect(compact.lists[0]).toEqual({
+      id: LONG_ID,
+      name: "Space",
+      url: `https://x.com/i/lists/${LONG_ID}`,
+      description: "Rockets and more",
+      mode: "private",
+      memberCount: 120,
+      subscriberCount: 3400,
+      createdAt: "2019-05-01T10:00:00.000Z",
+      slug: "space",
+      owner: {
+        id: "44196397",
+        username: "elonmusk",
+        name: "Elon Musk",
+        url: "https://x.com/elonmusk",
+        verified: false,
+        isBlueVerified: true,
+        verifiedType: null,
+        isProtected: false,
+        verifiedSince: null,
+        isIdentityVerified: false,
+      },
+    });
+    // No link is invented for an ID that is not numeric.
+    expect(compact.lists[1]).toMatchObject({ id: "x", url: null, owner: null, memberCount: null });
+    expect(outputInfo("compact", "lists").fieldsOmitted.join(" ")).toContain("facepile");
+  });
+
   it("returns empty lists for an empty page", () => {
     expect(compactResult("users", { data: [], pagination: { nextCursor: null } })).toEqual({
       users: [],

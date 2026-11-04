@@ -1,6 +1,6 @@
 {
   "name": "@tweetapi/mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for TweetAPI: read-only Twitter data and docs for AI agents. Not affiliated with X Corp.",
   "license": "MIT",
   "packageManager": "pnpm@11.7.0",

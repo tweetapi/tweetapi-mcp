@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -73,6 +73,22 @@ describe("TweetAPI MCP server", () => {
         "tweetapi://docs/ai-docs-v2",
       ]);
       expect(prompts.prompts.map((prompt) => prompt.name)).toEqual(["integrate_tweetapi"]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("reports the package version as the MCP server version", async () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      version: string;
+    };
+    const connection = await connectServer();
+
+    try {
+      expect(connection.client.getServerVersion()).toMatchObject({
+        name: "tweetapi-mcp",
+        version: pkg.version,
+      });
     } finally {
       await connection.close();
     }
@@ -329,6 +345,8 @@ describe("TweetAPI MCP server", () => {
   it("passes SDK output-schema validation for compact and full results of every compact tool", async () => {
     const tweet = { id: "1", text: "t", author: { id: "2", username: "jack" } };
     const user = { id: "2", username: "jack", name: "jack" };
+    const list = { id: "9", name: "List", memberCount: 1, owner: user };
+    const listPage = { data: [list], pagination: { nextCursor: null, prevCursor: null } };
     const bodies: Record<string, unknown> = {
       "/tw-v2/user/by-username": { data: user },
       "/tw-v2/user/by-id": { data: user },
@@ -336,12 +354,15 @@ describe("TweetAPI MCP server", () => {
       "/tw-v2/tweet/details-by-ids": { data: { tweets: [tweet, null] } },
       "/tw-v2/community/members": { data: [{ user, role: "member" }] },
       "/tw-v2/search": { data: [{ type: "tweet", content: tweet }], pagination: {} },
+      "/tw-v2/user/lists": listPage,
+      "/tw-v2/user/list-memberships": listPage,
+      "/tw-v2/list/search": listPage,
     };
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const path = new URL(String(input)).pathname;
       const body =
         bodies[path] ??
-        (/(tweets|quotes|replies)$/.test(path)
+        (/(tweets|quotes|replies|photos|videos|highlights|articles|media)$/.test(path)
           ? { data: [tweet], pagination: { nextCursor: "n", prevCursor: null } }
           : { data: [user], pagination: { nextCursor: null, prevCursor: null } });
       return new Response(JSON.stringify(body));

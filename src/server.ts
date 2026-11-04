@@ -112,7 +112,7 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
   const server = new McpServer(
     {
       name: "tweetapi-mcp",
-      version: "0.1.0",
+      version: "0.3.0",
     },
     {
       maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
