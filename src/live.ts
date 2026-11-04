@@ -85,6 +85,22 @@ const userIdList = z
 const tweetIdList = z
   .union([z.string().min(1), z.array(identifierText).min(1).max(200)])
   .describe("Up to 200 numeric post IDs or post links, as a comma-separated string or an array.");
+const trendCountry = z
+  .string()
+  .regex(/^[A-Za-z]{2}$/, "country must be a two-letter country code")
+  .optional()
+  .describe(
+    "Two-letter country code such as US or IT (case-insensitive). Cannot be combined with woeid."
+  );
+const trendWoeid = z
+  .union([
+    z.string().regex(/^[1-9]\d{0,9}$/, "woeid must be a positive whole number"),
+    z.number().int().min(1).max(9_999_999_999),
+  ])
+  .optional()
+  .describe(
+    "Where On Earth ID of a location from tweetapi_trend_locations, or 1 for worldwide. Cannot be combined with country."
+  );
 const responseFormat = z
   .enum(["full", "compact"])
   .optional()
@@ -128,6 +144,9 @@ export type LiveToolEndpoint = {
   batch?: { field: string; kind: BatchKind };
   // X v1.1 follower/following routes: a next cursor of exactly "0" means the last page.
   zeroCursorEnds?: true;
+  // Inputs that cannot be sent together. TweetAPI rejects the pair; checking locally saves a
+  // round trip.
+  exclusiveInputs?: readonly string[];
 };
 
 export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
@@ -294,6 +313,86 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     inputSchema: { subjectId: userId, targetId: userId },
   },
   {
+    name: "tweetapi_user_photos",
+    title: "Get User Photos",
+    description:
+      "Fetch one page of a user's posts that contain photos, as on the Photos tab of their profile. Videos are a separate feed: use tweetapi_user_videos.",
+    method: "GET",
+    path: "/tw-v2/user/photos",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "tweets",
+  },
+  {
+    name: "tweetapi_user_videos",
+    title: "Get User Videos",
+    description:
+      "Fetch one page of a user's posts that contain videos, as on the Videos tab of their profile. Photos are a separate feed: use tweetapi_user_photos.",
+    method: "GET",
+    path: "/tw-v2/user/videos",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "tweets",
+  },
+  {
+    name: "tweetapi_user_highlights",
+    title: "Get User Highlights",
+    description:
+      "Fetch one page of the posts a user has added to the Highlights tab of their profile. Highlights are an X Premium feature, so most accounts return an empty page.",
+    method: "GET",
+    path: "/tw-v2/user/highlights",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "tweets",
+  },
+  {
+    name: "tweetapi_user_articles",
+    title: "Get User Articles",
+    description:
+      "Fetch one page of the posts that published a user's X Articles, with each Article's title and preview text. The full Article text is not included: pass the post ID to tweetapi_tweet_details to read it.",
+    method: "GET",
+    path: "/tw-v2/user/articles",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "tweets",
+  },
+  {
+    name: "tweetapi_user_affiliates",
+    title: "Get User Affiliates",
+    description:
+      "Fetch one page of the accounts affiliated with a business profile, as on its Affiliates tab. Returns X's default affiliate group only; a profile with no affiliates returns an empty list.",
+    method: "GET",
+    path: "/tw-v2/user/affiliates",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "users",
+  },
+  {
+    name: "tweetapi_user_similar_accounts",
+    title: "Get Similar Accounts",
+    description:
+      "Fetch the accounts X lists as similar to a user. Returns a single page with no cursor. X often lists none, and an empty result is still billed.",
+    method: "GET",
+    path: "/tw-v2/user/similar-accounts",
+    inputSchema: { userId, responseFormat },
+    compactKind: "users",
+  },
+  {
+    name: "tweetapi_user_lists",
+    title: "Get User Lists",
+    description:
+      "Fetch one page of the Lists shown on a user's Lists tab. X can include Lists owned by other accounts, so check owner on each List; Private Lists are included and mode says which. For Lists other accounts added this user to, use tweetapi_user_list_memberships.",
+    method: "GET",
+    path: "/tw-v2/user/lists",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "lists",
+  },
+  {
+    name: "tweetapi_user_list_memberships",
+    title: "Get User List Memberships",
+    description:
+      "Fetch one page of the Lists a user has been added to as a member (the Member of view on x.com). They can be owned by any account, so check owner on each List; Private Lists are included and mode says which. For the user's own Lists tab, use tweetapi_user_lists.",
+    method: "GET",
+    path: "/tw-v2/user/list-memberships",
+    inputSchema: { userId, cursor: optionalCursor, responseFormat },
+    compactKind: "lists",
+  },
+  {
     name: "tweetapi_search",
     title: "Search Tweets And Users",
     description: "Search public tweets, users, photos, or videos.",
@@ -367,6 +466,17 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     identifiers: { tweetId: "tweet" },
   },
   {
+    name: "tweetapi_tweet_hidden_replies",
+    title: "Get Hidden Replies",
+    description:
+      "Fetch one page of the replies that a post's author has hidden, by post ID or post link. Hidden replies are public on X. A post without hidden replies returns an empty page.",
+    method: "GET",
+    path: "/tw-v2/tweet/hidden-replies",
+    inputSchema: { tweetId, cursor: optionalCursor, responseFormat },
+    compactKind: "tweets",
+    identifiers: { tweetId: "tweet" },
+  },
+  {
     name: "tweetapi_tweet_translate",
     title: "Translate Tweet",
     description: "Translate public tweet text without changing the tweet.",
@@ -420,6 +530,16 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     identifiers: { listId: "list" },
   },
   {
+    name: "tweetapi_list_search",
+    title: "Search Lists",
+    description:
+      "Search X Lists by keyword and fetch one page of matching Lists. A page can be short without being the last one. Use the List IDs with tweetapi_list_tweets or tweetapi_list_members.",
+    method: "GET",
+    path: "/tw-v2/list/search",
+    inputSchema: { query: z.string().min(1).max(512), cursor: optionalCursor, responseFormat },
+    compactKind: "lists",
+  },
+  {
     name: "tweetapi_community_details",
     title: "Get Community Details",
     description: "Fetch public details for a community.",
@@ -440,6 +560,17 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
       cursor: optionalCursor,
       responseFormat,
     },
+    compactKind: "tweets",
+    identifiers: { communityId: "community" },
+  },
+  {
+    name: "tweetapi_community_media",
+    title: "Get Community Media",
+    description:
+      "Fetch one page of posts with photos or videos from a community, as on its Media tab, by community ID or community link.",
+    method: "GET",
+    path: "/tw-v2/community/media",
+    inputSchema: { communityId, cursor: optionalCursor, responseFormat },
     compactKind: "tweets",
     identifiers: { communityId: "community" },
   },
@@ -479,6 +610,25 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     method: "GET",
     path: "/tw-v2/space/stream-url",
     inputSchema: { mediaKey: z.string().min(1) },
+  },
+  {
+    name: "tweetapi_trends",
+    title: "Get Trends",
+    description:
+      "Fetch the trending topics X shows worldwide, in a country, or at a location. Pass country (a two-letter code such as US) or woeid (from tweetapi_trend_locations), not both; omit both for worldwide. Not every country is supported, and an unsupported one returns not found instead of worldwide trends.",
+    method: "GET",
+    path: "/tw-v2/trends",
+    inputSchema: { country: trendCountry, woeid: trendWoeid },
+    exclusiveInputs: ["country", "woeid"],
+  },
+  {
+    name: "tweetapi_trend_locations",
+    title: "Get Trend Locations",
+    description:
+      "List the locations X serves trends for: worldwide, a set of countries and many cities, each with the woeid and countryCode to pass to tweetapi_trends. Not paginated.",
+    method: "GET",
+    path: "/tw-v2/trends/locations",
+    inputSchema: {},
   },
   {
     name: "tweetapi_account_usage",
@@ -561,6 +711,16 @@ function normalizeArgs(endpoint: LiveToolEndpoint, args: Record<string, unknown>
   const forwarded: Record<string, unknown> = {};
   const resolved: Record<string, ResolvedIdentifier | ResolvedIdentifier[]> = {};
   let converted = false;
+
+  const supplied = (endpoint.exclusiveInputs ?? []).filter(
+    (field) => args[field] !== undefined && args[field] !== null && args[field] !== ""
+  );
+  if (supplied.length > 1) {
+    throw new IdentifierInputError(
+      supplied[1],
+      `Use only one of ${supplied.join(" and ")}. They cannot be combined.`
+    );
+  }
 
   for (const [field, value] of Object.entries(args)) {
     // Forward only declared inputs. The MCP SDK already strips unknown keys; this keeps direct

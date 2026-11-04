@@ -9,7 +9,8 @@ export type CompactKind =
   | "search"
   | "tweetDetails"
   | "tweetLookup"
-  | "communityMembers";
+  | "communityMembers"
+  | "lists";
 
 export type BatchKind = "usernames" | "userIds" | "tweetIds";
 
@@ -34,6 +35,7 @@ export type Completeness = {
 
 const MAX_NESTED_TWEET_DEPTH = 1;
 const USERNAME = /^[A-Za-z0-9_]{1,50}$/;
+const NUMERIC_ID = /^\d+$/;
 
 const TWEET_FIELDS_OMITTED = [
   "author profile details other than identity and verification (use a user tool for bio and counts)",
@@ -54,6 +56,12 @@ const USER_FIELDS_OMITTED = [
   "profile capability flags such as translation and graduated access",
 ];
 
+const LIST_FIELDS_OMITTED = [
+  "banner URL, default banner media, and member facepile image URLs",
+  "the uri path (url is kept)",
+  "owner profile details other than identity and verification (use a user tool for bio and counts)",
+];
+
 export function outputInfo(format: ResponseFormat, kind: CompactKind | undefined): OutputInfo {
   if (format === "full" || !kind) {
     return { format, fieldsOmitted: [], itemsOmitted: 0, textTruncated: false };
@@ -62,9 +70,11 @@ export function outputInfo(format: ResponseFormat, kind: CompactKind | undefined
   const fieldsOmitted =
     kind === "user" || kind === "users" || kind === "communityMembers"
       ? USER_FIELDS_OMITTED
-      : kind === "search"
-        ? [...TWEET_FIELDS_OMITTED, ...USER_FIELDS_OMITTED.map((field) => `users: ${field}`)]
-        : TWEET_FIELDS_OMITTED;
+      : kind === "lists"
+        ? LIST_FIELDS_OMITTED
+        : kind === "search"
+          ? [...TWEET_FIELDS_OMITTED, ...USER_FIELDS_OMITTED.map((field) => `users: ${field}`)]
+          : TWEET_FIELDS_OMITTED;
 
   return { format, fieldsOmitted: [...fieldsOmitted], itemsOmitted: 0, textTruncated: false };
 }
@@ -123,6 +133,10 @@ export function tweetUrl(id: string | null, username: string | null): string | n
 export function userUrl(id: string | null, username: string | null): string | null {
   if (username && USERNAME.test(username)) return `https://x.com/${username}`;
   return id ? `https://x.com/i/user/${id}` : null;
+}
+
+export function listUrl(id: string | null): string | null {
+  return id && NUMERIC_ID.test(id) ? `https://x.com/i/lists/${id}` : null;
 }
 
 export function compactUser(value: unknown): unknown {
@@ -377,6 +391,26 @@ function compactSearchItem(item: unknown): unknown {
   return item;
 }
 
+// A List's owner can be any account, so the compact owner keeps identity and verification.
+export function compactList(value: unknown): unknown {
+  if (!isRecord(value)) return value ?? null;
+
+  const id = str(value, "id");
+
+  return {
+    id,
+    name: str(value, "name"),
+    url: listUrl(id),
+    description: str(value, "description"),
+    mode: str(value, "mode"),
+    memberCount: num(value, "memberCount"),
+    subscriberCount: num(value, "subscriberCount"),
+    createdAt: str(value, "createdAt"),
+    slug: str(value, "slug"),
+    owner: compactAuthor(value.owner),
+  };
+}
+
 function compactCommunityMember(item: unknown): unknown {
   if (!isRecord(item)) return item;
 
@@ -402,6 +436,8 @@ export function compactResult(kind: CompactKind, result: unknown, searchType?: s
       return { tweets: mapArray(data, (item) => compactTweet(item)) };
     case "communityMembers":
       return { members: mapArray(data, compactCommunityMember) };
+    case "lists":
+      return { lists: mapArray(data, compactList) };
     case "tweetDetails": {
       const details = isRecord(data) ? data : {};
       return {

@@ -23,7 +23,7 @@ describe("live TweetAPI tool definitions", () => {
     const names = LIVE_TOOL_ENDPOINTS.map((tool) => tool.name);
     const paths = LIVE_TOOL_ENDPOINTS.map((tool) => tool.path);
 
-    expect(names).toHaveLength(34);
+    expect(names).toHaveLength(47);
     expect(names).toEqual([
       "tweetapi_user_by_username",
       "tweetapi_user_by_usernames",
@@ -41,23 +41,36 @@ describe("live TweetAPI tool definitions", () => {
       "tweetapi_user_followers_list",
       "tweetapi_user_following_list",
       "tweetapi_user_check_follow",
+      "tweetapi_user_photos",
+      "tweetapi_user_videos",
+      "tweetapi_user_highlights",
+      "tweetapi_user_articles",
+      "tweetapi_user_affiliates",
+      "tweetapi_user_similar_accounts",
+      "tweetapi_user_lists",
+      "tweetapi_user_list_memberships",
       "tweetapi_search",
       "tweetapi_tweet_details",
       "tweetapi_tweet_metrics",
       "tweetapi_tweet_details_by_ids",
       "tweetapi_tweet_quotes",
       "tweetapi_tweet_retweets",
+      "tweetapi_tweet_hidden_replies",
       "tweetapi_tweet_translate",
       "tweetapi_list_details",
       "tweetapi_list_tweets",
       "tweetapi_list_members",
       "tweetapi_list_followers",
+      "tweetapi_list_search",
       "tweetapi_community_details",
       "tweetapi_community_tweets",
+      "tweetapi_community_media",
       "tweetapi_community_members",
       "tweetapi_community_search",
       "tweetapi_space_by_id",
       "tweetapi_space_stream_url",
+      "tweetapi_trends",
+      "tweetapi_trend_locations",
       "tweetapi_account_usage",
     ]);
     expect(paths.some((path) => path.includes("/internal/"))).toBe(false);
@@ -76,6 +89,66 @@ describe("live TweetAPI tool definitions", () => {
         (tool) => tool.method === "GET" || tool.path === "/tw-v2/tweet/translate"
       )
     ).toBe(true);
+  });
+
+  it("only uses endpoints the public docs list as read-only without an X login", () => {
+    // Every GET or POST in https://tweetapi.com/openapi-v2.json marked x-tweetapi-safety
+    // "read-only" with x-tweetapi-requires-twitter-auth false (checked 2026-11-04). A path
+    // missing here is not public: it needs docs and review before any tool can use it.
+    const documentedPublicReads = new Set([
+      "GET /tw-v2/account/usage",
+      "GET /tw-v2/community/details",
+      "GET /tw-v2/community/media",
+      "GET /tw-v2/community/members",
+      "GET /tw-v2/community/search",
+      "GET /tw-v2/community/tweets",
+      "GET /tw-v2/list/details",
+      "GET /tw-v2/list/followers",
+      "GET /tw-v2/list/members",
+      "GET /tw-v2/list/search",
+      "GET /tw-v2/list/tweets",
+      "GET /tw-v2/search",
+      "GET /tw-v2/space/by-id",
+      "GET /tw-v2/space/stream-url",
+      "GET /tw-v2/trends",
+      "GET /tw-v2/trends/locations",
+      "GET /tw-v2/tweet/details",
+      "GET /tw-v2/tweet/details-by-ids",
+      "GET /tw-v2/tweet/hidden-replies",
+      "GET /tw-v2/tweet/quotes",
+      "GET /tw-v2/tweet/retweets",
+      "POST /tw-v2/tweet/translate",
+      "GET /tw-v2/user/about-account",
+      "GET /tw-v2/user/affiliates",
+      "GET /tw-v2/user/articles",
+      "GET /tw-v2/user/by-id",
+      "GET /tw-v2/user/by-ids",
+      "GET /tw-v2/user/by-username",
+      "GET /tw-v2/user/by-usernames",
+      "GET /tw-v2/user/followers",
+      "GET /tw-v2/user/followers-ids",
+      "GET /tw-v2/user/followers-list",
+      "GET /tw-v2/user/following",
+      "GET /tw-v2/user/following-ids",
+      "GET /tw-v2/user/following-list",
+      "GET /tw-v2/user/friendship",
+      "GET /tw-v2/user/highlights",
+      "GET /tw-v2/user/list-memberships",
+      "GET /tw-v2/user/lists",
+      "GET /tw-v2/user/photos",
+      "GET /tw-v2/user/similar-accounts",
+      "GET /tw-v2/user/subscriptions",
+      "GET /tw-v2/user/tweets",
+      "GET /tw-v2/user/tweets-and-replies",
+      "GET /tw-v2/user/verified-followers",
+      "GET /tw-v2/user/videos",
+    ]);
+    const used = new Set(LIVE_TOOL_ENDPOINTS.map((tool) => `${tool.method} ${tool.path}`));
+
+    expect(documentedPublicReads.size).toBe(46);
+    expect([...used].filter((route) => !documentedPublicReads.has(route))).toEqual([]);
+    // And each documented public read has a tool.
+    expect([...documentedPublicReads].filter((route) => !used.has(route))).toEqual([]);
   });
 
   it("accepts batches of up to 100 users, matching the TweetAPI batch limit", () => {
@@ -793,6 +866,252 @@ describe("live tool results", () => {
       expect(fetchMock, endpoint.name).toHaveBeenCalledTimes(1);
       expect(outputSchema.safeParse(result.structuredContent).success, endpoint.name).toBe(true);
     }
+  });
+});
+
+describe("profile tabs, Lists, hidden replies, community media and trends", () => {
+  function sampleList(id: string) {
+    return {
+      id,
+      name: "AI builders",
+      description: "People shipping agents",
+      mode: "public",
+      memberCount: 42,
+      subscriberCount: 7,
+      createdAt: "2026-01-02T03:04:05.000Z",
+      slug: "ai-builders",
+      uri: `/i/lists/${id}`,
+      bannerUrl: "https://pbs.twimg.com/list_banner_img/1/b.jpg",
+      defaultBannerMedia: { url: "https://pbs.twimg.com/media/b.jpg", width: 1, height: 1 },
+      facepileUrls: ["https://pbs.twimg.com/profile_images/1/a.jpg"],
+      owner: { id: "12", username: "jack", name: "jack", bio: "long bio", followerCount: 9 },
+    };
+  }
+
+  it.each([
+    ["tweetapi_user_photos", "/tw-v2/user/photos", "tweets"],
+    ["tweetapi_user_videos", "/tw-v2/user/videos", "tweets"],
+    ["tweetapi_user_highlights", "/tw-v2/user/highlights", "tweets"],
+    ["tweetapi_user_articles", "/tw-v2/user/articles", "tweets"],
+    ["tweetapi_user_affiliates", "/tw-v2/user/affiliates", "users"],
+    ["tweetapi_user_lists", "/tw-v2/user/lists", "lists"],
+    ["tweetapi_user_list_memberships", "/tw-v2/user/list-memberships", "lists"],
+  ])("%s forwards the user ID and cursor to %s", async (name, path, key) => {
+    const item =
+      key === "tweets"
+        ? sampleTweet("1")
+        : key === "lists"
+          ? sampleList("9")
+          : { id: "13", username: "jill" };
+    const { tool, fetchMock } = setup(name, () =>
+      jsonResponse({ data: [item], pagination: { nextCursor: "next", prevCursor: null } })
+    );
+
+    const result = await tool.handler({ userId: "12", cursor: "c1", responseFormat: "compact" });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(requestedUrl(fetchMock)).toBe(`https://api.example.test${path}?userId=12&cursor=c1`);
+    expect(result.structuredContent).toMatchObject({
+      endpoint: { method: "GET", path },
+      completeness: { scope: "page", nextCursor: "next", moreAvailable: true, itemCount: 1 },
+      output: { format: "compact" },
+      result: { [key]: [expect.any(Object)] },
+    });
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("returns similar accounts as one unpaginated result", async () => {
+    const { tool, fetchMock } = setup("tweetapi_user_similar_accounts", () =>
+      jsonResponse({ data: [{ id: "13", username: "jill" }], pagination: { nextCursor: null } })
+    );
+    const endpoint = LIVE_TOOL_ENDPOINTS.find((item) => item.name === tool.name);
+
+    const result = await tool.handler({ userId: "12", cursor: "ignored" });
+
+    expect(Object.keys(endpoint?.inputSchema ?? {})).toEqual(["userId", "responseFormat"]);
+    expect(requestedUrl(fetchMock)).toBe(
+      "https://api.example.test/tw-v2/user/similar-accounts?userId=12"
+    );
+    expect(result.structuredContent).toMatchObject({
+      completeness: { scope: "single", nextCursor: null, itemCount: 1 },
+      cost: { estimatedUnits: 1 },
+    });
+  });
+
+  it("compacts Lists without dropping IDs, links, counts or owner identity", async () => {
+    const upstream = { data: [sampleList("1234567890")], pagination: { nextCursor: null } };
+    const { tool } = setup("tweetapi_list_search", () => jsonResponse(upstream));
+
+    const compact = await tool.handler({ query: "ai", responseFormat: "compact" });
+    const full = await tool.handler({ query: "ai" });
+
+    expect(compact.structuredContent).toMatchObject({
+      output: { format: "compact", itemsOmitted: 0 },
+      result: {
+        lists: [
+          {
+            id: "1234567890",
+            name: "AI builders",
+            url: "https://x.com/i/lists/1234567890",
+            description: "People shipping agents",
+            mode: "public",
+            memberCount: 42,
+            subscriberCount: 7,
+            createdAt: "2026-01-02T03:04:05.000Z",
+            slug: "ai-builders",
+            owner: { id: "12", username: "jack", url: "https://x.com/jack" },
+          },
+        ],
+      },
+    });
+    const compactText = JSON.stringify(compact.structuredContent?.result);
+    expect(compactText).not.toContain("long bio");
+    expect(compactText).not.toContain("facepile");
+    expect(compactText).not.toContain("list_banner_img");
+    expect(
+      (compact.structuredContent?.output as { fieldsOmitted: string[] }).fieldsOmitted.length
+    ).toBeGreaterThan(0);
+    expect(full.structuredContent?.result).toEqual(upstream);
+  });
+
+  it("forwards the List search query and cursor", async () => {
+    const { tool, fetchMock } = setup("tweetapi_list_search", () =>
+      jsonResponse({ data: [], pagination: { nextCursor: null } })
+    );
+
+    await tool.handler({ query: "ai agents", cursor: "c2" });
+
+    expect(requestedUrl(fetchMock)).toBe(
+      "https://api.example.test/tw-v2/list/search?query=ai+agents&cursor=c2"
+    );
+  });
+
+  it("accepts a post link for hidden replies and forwards only the numeric ID", async () => {
+    const { tool, fetchMock } = setup("tweetapi_tweet_hidden_replies", () =>
+      jsonResponse({ data: [sampleTweet("2")], pagination: { nextCursor: null } })
+    );
+
+    const result = await tool.handler({ tweetId: `https://x.com/jack/status/${LONG_ID}` });
+
+    expect(requestedUrl(fetchMock)).toBe(
+      `https://api.example.test/tw-v2/tweet/hidden-replies?tweetId=${LONG_ID}`
+    );
+    expect(result.structuredContent?.resolvedInput).toEqual({
+      tweetId: { value: LONG_ID, source: "link" },
+    });
+  });
+
+  it("accepts a community link for community media and rejects other links locally", async () => {
+    const { tool, fetchMock } = setup("tweetapi_community_media", () =>
+      jsonResponse({ data: [sampleTweet("3")], pagination: { nextCursor: "n" } })
+    );
+
+    const result = await tool.handler({
+      communityId: "https://x.com/i/communities/1500000000000000000",
+      responseFormat: "compact",
+    });
+
+    expect(requestedUrl(fetchMock)).toBe(
+      "https://api.example.test/tw-v2/community/media?communityId=1500000000000000000"
+    );
+    expect(result.structuredContent).toMatchObject({
+      result: { tweets: [{ id: "3", url: "https://x.com/jack/status/3" }] },
+    });
+
+    const wrong = await tool.handler({ communityId: "https://x.com/i/lists/1" });
+    expect(wrong.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{}, "https://api.example.test/tw-v2/trends"],
+    [{ country: "it" }, "https://api.example.test/tw-v2/trends?country=it"],
+    [{ woeid: 23424977 }, "https://api.example.test/tw-v2/trends?woeid=23424977"],
+    [{ woeid: "1" }, "https://api.example.test/tw-v2/trends?woeid=1"],
+  ])("fetches trends for %j with one request", async (args, url) => {
+    const trends = {
+      data: {
+        location: { woeid: 1, name: "Worldwide" },
+        asOf: "2026-11-04T10:00:00Z",
+        createdAt: "2026-11-04T09:55:00Z",
+        trends: [{ name: "#AI", query: "#AI", url: null, promoted: false, tweetVolume: null }],
+      },
+    };
+    const { tool, fetchMock } = setup("tweetapi_trends", () => jsonResponse(trends));
+
+    const result = await tool.handler(args);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(requestedUrl(fetchMock)).toBe(url);
+    expect(result.structuredContent).toMatchObject({
+      completeness: { scope: "single" },
+      result: trends,
+    });
+    expect(outputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("rejects country and woeid together without calling TweetAPI", async () => {
+    const { tool, fetchMock } = setup("tweetapi_trends", () => jsonResponse({ data: null }));
+
+    const result = await tool.handler({ country: "US", woeid: "1" });
+    const body = parseToolJson(result as never) as {
+      error: { code: string; message: string; details: Record<string, unknown> };
+    };
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(body.error.code).toBe("TWEETAPI_INVALID_INPUT");
+    expect(body.error.message).toMatch(/country and woeid/);
+    expect(body.error.details).toMatchObject({
+      layer: "mcp_input",
+      field: "woeid",
+      cost: { estimatedUnits: 0 },
+    });
+  });
+
+  it("validates trends inputs before they reach TweetAPI", () => {
+    const endpoint = LIVE_TOOL_ENDPOINTS.find((item) => item.name === "tweetapi_trends");
+
+    expect(endpoint?.inputSchema.country.safeParse("USA").success).toBe(false);
+    expect(endpoint?.inputSchema.country.safeParse("us").success).toBe(true);
+    expect(endpoint?.inputSchema.woeid.safeParse("0").success).toBe(false);
+    expect(endpoint?.inputSchema.woeid.safeParse(0).success).toBe(false);
+    expect(endpoint?.inputSchema.woeid.safeParse("12abc").success).toBe(false);
+    expect(endpoint?.inputSchema.woeid.safeParse(1.5).success).toBe(false);
+  });
+
+  it("lists trend locations with no inputs and one request", async () => {
+    const locations = {
+      data: [
+        {
+          woeid: 1,
+          name: "Worldwide",
+          placeType: { code: 19, name: "Supername" },
+          country: null,
+          countryCode: null,
+          parentId: null,
+        },
+        {
+          woeid: 23424853,
+          name: "Italy",
+          placeType: { code: 12, name: "Country" },
+          country: "Italy",
+          countryCode: "IT",
+          parentId: 1,
+        },
+      ],
+    };
+    const { tool, fetchMock } = setup("tweetapi_trend_locations", () => jsonResponse(locations));
+    const endpoint = LIVE_TOOL_ENDPOINTS.find((item) => item.name === tool.name);
+
+    const result = await tool.handler({ woeid: "1" });
+
+    expect(Object.keys(endpoint?.inputSchema ?? {})).toEqual([]);
+    expect(requestedUrl(fetchMock)).toBe("https://api.example.test/tw-v2/trends/locations");
+    expect(result.structuredContent).toMatchObject({
+      completeness: { scope: "single", itemCount: 2 },
+      result: locations,
+    });
   });
 });
 

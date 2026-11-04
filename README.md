@@ -1,8 +1,8 @@
 # TweetAPI MCP
 
 MCP server for [TweetAPI](https://tweetapi.com), a third-party Twitter data API. It lets AI agents
-read public Twitter data (search, profiles, followers, timelines, lists, communities and Spaces) and
-look up TweetAPI's own docs.
+read public Twitter data (search, profiles, followers, timelines, lists, communities, Spaces and
+trends) and look up TweetAPI's own docs.
 
 TweetAPI is an independent service and is not affiliated with X Corp.
 
@@ -79,16 +79,18 @@ Without `--live`, only the docs tools are available and no API key is needed.
 **Docs** (free, no API calls): `tweetapi_docs_search`, `tweetapi_endpoint_lookup`,
 `tweetapi_docs_get_page`, `tweetapi_sdk_guidance`, `tweetapi_tool_catalog`.
 
-**Live data** (34 read-only tools):
+**Live data** (47 read-only tools):
 
 - Users: profile by username or ID, batches of up to 100, About this account, tweets, tweets and
-  replies, followers and following (profiles or IDs), verified followers, subscriptions, follow
-  check.
+  replies, Photos, Videos, Highlights and Articles tabs, followers and following (profiles or IDs),
+  verified followers, subscriptions, affiliates, similar accounts, Lists and List memberships,
+  follow check.
 - Tweets: search, details with replies, metrics only, batches of up to 200 by ID, quotes, retweets,
-  translation.
-- Lists: details, tweets, members, followers.
-- Communities: details, tweets, members, search.
+  hidden replies, translation.
+- Lists: details, tweets, members, followers, search.
+- Communities: details, tweets, media, members, search.
 - Spaces: details and audio stream URL.
+- Trends: trending topics worldwide, by country or by location, and the locations X supports.
 - Account: `tweetapi_account_usage`, the units left on the API key behind the connection.
 
 Each live tool call makes exactly one TweetAPI request and is billed like any other API call. Tools
@@ -105,9 +107,10 @@ API key.
 - Each result has `retrievedAt` (when the MCP server got the response), `completeness` (page cursor,
   batch items not returned, or a single object), `output` (format and omitted fields), and `cost` (a
   unit estimate from the published pricing rules, not a billing record).
-- `responseFormat: "compact"` is optional on profile, list, and post tools. It keeps full post text,
-  IDs, links, original dates, counts, and cursors, never drops items, and lists the dropped fields
-  in `output.fieldsOmitted`. The default stays `full`, which returns TweetAPI's JSON unchanged.
+- `responseFormat: "compact"` is optional on profile, post, and List-page tools. It keeps full post
+  text, IDs, links, original dates, counts, and cursors, never drops items, and lists the dropped
+  fields in `output.fieldsOmitted`. The default stays `full`, which returns TweetAPI's JSON
+  unchanged.
 - `tweetapi_tweet_metrics` returns its own short projection, so its `output.format` is `metrics`,
   `output.fieldsOmitted` lists what it leaves out, and `output.textTruncated` matches
   `result.tweet.textTruncated`.
@@ -115,6 +118,8 @@ API key.
   last page. `pagination` keeps the `"0"`, and `completeness` reports no next cursor.
 - Post, profile, list, community, and Space fields accept the matching `x.com` or `twitter.com`
   link, and username fields accept `@handles`. See `src/identifiers.ts` for the exact rules.
+- `tweetapi_trends` takes `country` or `woeid`, not both. Sending both is rejected before any
+  request is made.
 - `tweetapi_account_usage` reads the units left on the API key behind the connection. It is free and
   counts toward the per-minute limit.
 - Errors carry `details.layer` (`mcp_input`, `mcp_connection`, `tweetapi_api_key`, `tweetapi_api`,
