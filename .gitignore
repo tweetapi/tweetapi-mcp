@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+.next/
+.cache/
+.pnpm-store/
+.DS_Store

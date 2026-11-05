@@ -1,0 +1,165 @@
+# TweetAPI MCP
+
+MCP server for [TweetAPI](https://tweetapi.com), a third-party Twitter data API. It lets AI agents
+read public Twitter data (search, profiles, followers, timelines, lists, communities, Spaces and
+trends) and look up TweetAPI's own docs.
+
+TweetAPI is an independent service and is not affiliated with X Corp.
+
+## Hosted server
+
+The easiest way to use it is the hosted server. You sign in with your TweetAPI account and pick
+which API key backs the connection. New accounts get 100 free API units and no card is needed.
+
+```text
+https://mcp.tweetapi.com/mcp
+```
+
+Codex:
+
+```bash
+codex mcp add tweetapi --url https://mcp.tweetapi.com/mcp
+codex mcp login tweetapi
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http --scope user tweetapi https://mcp.tweetapi.com/mcp
+claude mcp login tweetapi
+```
+
+Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "tweetapi": {
+      "url": "https://mcp.tweetapi.com/mcp"
+    }
+  }
+}
+```
+
+The hosted server uses Streamable HTTP and OAuth. More setup notes are in the
+[agents guide](https://tweetapi.com/docs/getting-started/agents).
+
+## Run it locally
+
+You can also run the server yourself over stdio with an API key from the
+[TweetAPI dashboard](https://tweetapi.com/dashboard). Node 18 or newer and pnpm are required.
+
+```bash
+git clone https://github.com/tweetapi/tweetapi-mcp.git
+cd tweetapi-mcp
+pnpm install
+pnpm run build
+```
+
+Then point your MCP client at it:
+
+```json
+{
+  "mcpServers": {
+    "tweetapi": {
+      "command": "node",
+      "args": ["/path/to/tweetapi-mcp/dist/bin.js", "--live"],
+      "env": {
+        "TWEETAPI_API_KEY": "your_tweetapi_key_here"
+      }
+    }
+  }
+}
+```
+
+Without `--live`, only the docs tools are available and no API key is needed.
+
+## Tools
+
+**Docs** (free, no API calls): `tweetapi_docs_search`, `tweetapi_endpoint_lookup`,
+`tweetapi_docs_get_page`, `tweetapi_sdk_guidance`, `tweetapi_tool_catalog`.
+
+**Live data** (47 read-only tools):
+
+- Users: profile by username or ID, batches of up to 100, About this account, tweets, tweets and
+  replies, Photos, Videos, Highlights and Articles tabs, followers and following (profiles or IDs),
+  verified followers, subscriptions, affiliates, similar accounts, Lists and List memberships,
+  follow check.
+- Tweets: search, details with replies, metrics only, batches of up to 200 by ID, quotes, retweets,
+  hidden replies, translation.
+- Lists: details, tweets, members, followers, search.
+- Communities: details, tweets, media, members, search.
+- Spaces: details and audio stream URL.
+- Trends: trending topics worldwide, by country or by location, and the locations X supports.
+- Account: `tweetapi_account_usage`, the units left on the API key behind the connection.
+
+Each live tool call makes exactly one TweetAPI request and is billed like any other API call. Tools
+never paginate on their own; the agent passes the cursor when it wants the next page.
+
+Live tools are read-only. There are no tools for posting, DMs, follows, profile edits, account
+cookies or billing. The only account tool is the free read-only usage check for the connection's own
+API key.
+
+## Live tool results
+
+- Live tools declare an MCP output schema and return the same JSON as `structuredContent` and as a
+  text block.
+- Each result has `retrievedAt` (when the MCP server got the response), `completeness` (page cursor,
+  batch items not returned, or a single object), `output` (format and omitted fields), and `cost` (a
+  unit estimate from the published pricing rules, not a billing record).
+- `responseFormat: "compact"` is optional on profile, post, and List-page tools. It keeps full post
+  text, IDs, links, original dates, counts, and cursors, never drops items, and lists the dropped
+  fields in `output.fieldsOmitted`. The default stays `full`, which returns TweetAPI's JSON
+  unchanged.
+- `tweetapi_tweet_metrics` returns its own short projection, so its `output.format` is `metrics`,
+  `output.fieldsOmitted` lists what it leaves out, and `output.textTruncated` matches
+  `result.tweet.textTruncated`.
+- On the four X v1.1 follower and following ID and list tools, a `nextCursor` of `"0"` means the
+  last page. `pagination` keeps the `"0"`, and `completeness` reports no next cursor.
+- An empty page that still has a `nextCursor` says so in `completeness.note`. X often sends a cursor
+  at the end of a feed, so if the next page is empty too, stop: empty pages are billed.
+- Post, profile, list, community, and Space fields accept the matching `x.com` or `twitter.com`
+  link, and username fields accept `@handles`. See `src/identifiers.ts` for the exact rules.
+- `tweetapi_trends` takes `country` or `woeid`, not both. Sending both is rejected before any
+  request is made.
+- `tweetapi_account_usage` reads the units left on the API key behind the connection. It is free and
+  counts toward the per-minute limit.
+- Errors carry `details.layer` (`mcp_input`, `mcp_connection`, `tweetapi_api_key`, `tweetapi_api`,
+  `network`), `retryable`, `retryAfterSeconds` when TweetAPI sent `Retry-After`, and a cost
+  estimate. The server never retries on its own.
+
+[docs/client-verification.md](docs/client-verification.md) lists which client behaviors are covered
+by local tests and which still need a manual check with a real client.
+
+## Hosted service
+
+This repo is also the source for the service at `mcp.tweetapi.com`. In HTTP mode it accepts
+dashboard-issued OAuth tokens with the `tweetapi:read` scope, resolves the backing API key on the
+server, and never sends the bearer token upstream. It depends on TweetAPI's OAuth server, so it is
+not meant to be self-hosted as is. See [docs/security.md](docs/security.md) and
+[docs/deployment.md](docs/deployment.md) for how it works.
+
+```bash
+docker build -t tweetapi-mcp .
+docker run --rm -p 3100:3100 -e MCP_ALLOWED_HOSTS=localhost,127.0.0.1 tweetapi-mcp
+curl http://localhost:3100/healthz
+```
+
+## Development
+
+```bash
+pnpm install
+pnpm run check
+pnpm run check:release
+```
+
+The checks cover formatting, Markdown lint, TypeScript, unit tests, stdio and HTTP smoke tests, and
+a secret scan. Tests mock the docs and the API; they never call the live TweetAPI API.
+
+## Security
+
+Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)
