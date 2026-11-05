@@ -7,23 +7,57 @@ import { DOCS_SOURCES, DocsFetchError, TweetApiDocsService } from "./docs.js";
 import { createLiveToolDefinitions, LIVE_TOOL_ENDPOINTS, type LiveToolsOptions } from "./live.js";
 
 const docsSearchInputSchema = {
-  query: z.string().min(1),
-  limit: z.number().int().min(1).max(10).optional(),
+  query: z
+    .string()
+    .min(1)
+    .describe("Words to look for in the docs, such as rate limits, pagination or followers."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .optional()
+    .describe("How many matching sections to return, 1 to 10. Default 5."),
 };
 
 const endpointLookupInputSchema = {
-  pathOrKeyword: z.string().min(1),
+  pathOrKeyword: z
+    .string()
+    .min(1)
+    .describe(
+      "An endpoint path such as /tw-v2/user/followers, or a keyword such as followers. A path gives the most precise match."
+    ),
 };
 
 const sdkGuidanceInputSchema = {
-  language: z.string().min(1),
-  task: z.string().min(1),
+  language: z
+    .string()
+    .min(1)
+    .describe("Programming language: Python, or Node.js, TypeScript or JavaScript."),
+  task: z
+    .string()
+    .min(1)
+    .describe("What the code should do, such as fetch a user's latest posts. It is echoed back."),
 };
 
 const toolCatalogInputSchema = {
-  toolName: z.string().min(1).optional(),
-  endpointPath: z.string().min(1).optional(),
-  category: z.string().min(1).optional(),
+  toolName: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Exact tool name, such as tweetapi_search, to return only that tool."),
+  endpointPath: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "TweetAPI endpoint path, such as /tw-v2/user/followers, to find the tool that calls it."
+    ),
+  category: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("One of docs, user, tweet, search, list, community, space, trends or account."),
 };
 
 const READ_ONLY_TOOL_ANNOTATIONS = {
@@ -37,31 +71,36 @@ const DOCS_TOOL_METADATA = [
   {
     name: "tweetapi_docs_search",
     title: "Search TweetAPI Docs",
-    description: "Search current TweetAPI public docs from llms.txt and ai-docs-v2.txt.",
+    description:
+      "Search TweetAPI's public docs by keyword and return the best-matching sections, each with a title, a short snippet, its source URL and a score. Use it for general questions such as pricing, limits, errors or authentication; for one endpoint's full reference, use tweetapi_docs_get_page. Free: reads the public docs and uses no API key or units.",
     inputSchema: docsSearchInputSchema,
   },
   {
     name: "tweetapi_endpoint_lookup",
     title: "Lookup TweetAPI Endpoint",
-    description: "Find likely TweetAPI endpoint docs by path or keyword.",
+    description:
+      "Find the TweetAPI endpoint docs that match a path or keyword, and return up to 10 matching sections as snippets with their source URLs. Use it when you don't know the exact endpoint yet, then pass its path to tweetapi_docs_get_page for the full reference. Free: uses no API key or units.",
     inputSchema: endpointLookupInputSchema,
   },
   {
     name: "tweetapi_docs_get_page",
     title: "Get TweetAPI Docs Page",
-    description: "Return a full endpoint documentation section from ai-docs-v2.txt.",
+    description:
+      "Return the full reference for one TweetAPI endpoint: its method, path, title and whole docs section, with parameters, cost and an example request. An exact path such as /tw-v2/user/followers returns that endpoint; a keyword returns the single best match, and no match returns a TWEETAPI_DOCS_PAGE_NOT_FOUND error. Free: uses no API key or units.",
     inputSchema: endpointLookupInputSchema,
   },
   {
     name: "tweetapi_sdk_guidance",
     title: "TweetAPI SDK Guidance",
-    description: "Return concise SDK setup and usage guidance for a language/task.",
+    description:
+      "Return setup guidance for calling TweetAPI from your own code: the SDK package name, install command, an import example and notes, for Python or Node.js/TypeScript. Use it when writing an app that calls TweetAPI; to fetch data now, use the live tools instead. Free: makes no API calls.",
     inputSchema: sdkGuidanceInputSchema,
   },
   {
     name: "tweetapi_tool_catalog",
     title: "TweetAPI MCP Tool Catalog",
-    description: "Return a machine-readable catalog of current TweetAPI MCP tools.",
+    description:
+      "List the tools on this server as JSON: for each, its name, description, category, the TweetAPI endpoint it calls, estimated cost, response formats and input schema. Filter it with toolName, endpointPath or category. Use it to pick the right tool or check costs before calling live tools. Free: uses no API key or units.",
     inputSchema: toolCatalogInputSchema,
   },
 ] as const;
@@ -112,7 +151,7 @@ export function createTweetApiMcpServer(options: TweetApiMcpServerOptions = {}):
   const server = new McpServer(
     {
       name: "tweetapi-mcp",
-      version: "0.3.2",
+      version: "0.3.3",
     },
     {
       maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,

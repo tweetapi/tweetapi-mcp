@@ -41,7 +41,12 @@ const CLIENT_HEADER_VALUE = "hosted-mcp";
 const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 
 export const LIVE_TOOL_NOTICE =
-  "Requires a TweetAPI API key and consumes normal TweetAPI quota (usually 1 unit per call; each result includes a cost estimate). Read-only; one upstream request per call. The model must request pagination cursors explicitly.";
+  "Read-only. Needs a TweetAPI API key and makes one TweetAPI request per call, usually costing 1 unit; each result includes a cost estimate.";
+
+// Added to the description of tools that take a cursor, so the paging rule only appears where it
+// applies.
+const PAGED_TOOL_NOTICE =
+  "Returns one page: to get the next one, call again with cursor set to this result's completeness.nextCursor.";
 
 const ACCOUNT_USAGE_NOTICE =
   "Free (0 units) read-only check of the TweetAPI API key behind this connection. It counts toward the per-minute request limit. It cannot read other keys or change anything.";
@@ -53,11 +58,21 @@ const digitId = z.string().regex(/^\d+$/, "ID must contain only numbers");
 const userId = digitId.describe(
   "Numeric user ID. This tool does not look up usernames; call tweetapi_user_by_username first if you only have a username or profile link."
 );
-const optionalCursor = z.string().min(1).optional();
+const optionalCursor = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("completeness.nextCursor from the previous page. Omit it for the first page.");
 const searchType = z.enum(["Top", "Latest", "People", "Photos", "Videos"]);
 const tweetSortBy = z.enum(["Relevance", "Recency", "Likes"]);
 const communitySortBy = z.enum(["Relevance", "Recency"]);
-const count = z.number().int().min(1).max(500).optional();
+const count = z
+  .number()
+  .int()
+  .min(1)
+  .max(500)
+  .optional()
+  .describe("Page size from 1 to 500. Omit it for the default.");
 const identifierText = z.string().min(1).max(512);
 const username = identifierText.describe(
   "Username, @handle, or profile link such as https://x.com/jack."
@@ -165,7 +180,7 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     name: "tweetapi_user_by_usernames",
     title: "Get Users By Usernames",
     description:
-      "Fetch up to 100 public user profiles in one call by username, @handle, or profile link. Missing accounts are listed in completeness.notReturned.",
+      "Fetch up to 100 public user profiles in one call by username, @handle, or profile link. Missing accounts are listed in completeness.notReturned. Use tweetapi_user_by_ids when you have numeric IDs.",
     method: "GET",
     path: "/tw-v2/user/by-usernames",
     inputSchema: { usernames: usernameList, responseFormat },
@@ -187,7 +202,7 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     name: "tweetapi_user_by_ids",
     title: "Get Users By IDs",
     description:
-      "Fetch up to 100 public user profiles in one call by numeric user ID. Missing accounts are listed in completeness.notReturned.",
+      "Fetch up to 100 public user profiles in one call by numeric user ID. Missing accounts are listed in completeness.notReturned. Use tweetapi_user_by_usernames when you have usernames.",
     method: "GET",
     path: "/tw-v2/user/by-ids",
     inputSchema: { userIds: userIdList, responseFormat },
@@ -227,7 +242,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_user_verified_followers",
     title: "Get Verified Followers",
-    description: "Fetch one page of follower profiles for a user ID, limited to verified accounts.",
+    description:
+      "Fetch one page of a user's followers who are verified accounts, as on the Verified Followers tab. For all followers, use tweetapi_user_followers_v2.",
     method: "GET",
     path: "/tw-v2/user/verified-followers",
     inputSchema: { userId, cursor: optionalCursor, responseFormat },
@@ -256,7 +272,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_user_tweets_and_replies",
     title: "Get User Tweets And Replies",
-    description: "Fetch one page of a user's tweets including their replies.",
+    description:
+      "Fetch one page of a user's posts including their replies, as on the Replies tab of their profile. Use tweetapi_user_tweets for original posts without replies.",
     method: "GET",
     path: "/tw-v2/user/tweets-and-replies",
     inputSchema: { userId, cursor: optionalCursor, responseFormat },
@@ -307,10 +324,14 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_user_check_follow",
     title: "Check Follow Relationship",
-    description: "Check whether one user follows another, and whether they follow back.",
+    description:
+      "Check the follow relationship between two accounts by numeric user ID: following says whether the first follows the second, and followedBy whether the second follows back. Use tweetapi_user_by_username first if you only have usernames.",
     method: "GET",
     path: "/tw-v2/user/friendship",
-    inputSchema: { subjectId: userId, targetId: userId },
+    inputSchema: {
+      subjectId: digitId.describe("Numeric user ID of the account that may be the follower."),
+      targetId: digitId.describe("Numeric user ID of the account that may be followed."),
+    },
   },
   {
     name: "tweetapi_user_photos",
@@ -395,12 +416,23 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_search",
     title: "Search Tweets And Users",
-    description: "Search public tweets, users, photos, or videos.",
+    description:
+      "Search X for posts or accounts, like the x.com search box. type picks the results: Latest or Top for posts, People for accounts, Photos or Videos for posts with media. For Lists use tweetapi_list_search; for communities use tweetapi_community_search.",
     method: "GET",
     path: "/tw-v2/search",
     inputSchema: {
-      query: z.string().min(1).max(512),
-      type: searchType.default("Latest"),
+      query: z
+        .string()
+        .min(1)
+        .max(512)
+        .describe(
+          'Search text, 1 to 512 characters, with the same syntax and operators as x.com search, for example from:jack, "exact phrase", lang:en or since:2026-01-01.'
+        ),
+      type: searchType
+        .default("Latest")
+        .describe(
+          "Which results to return: Latest (default) or Top for posts, People for accounts, Photos or Videos for posts with media."
+        ),
       cursor: optionalCursor,
       responseFormat,
     },
@@ -415,7 +447,9 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
     path: "/tw-v2/tweet/details",
     inputSchema: {
       tweetId,
-      sortBy: tweetSortBy.default("Relevance"),
+      sortBy: tweetSortBy
+        .default("Relevance")
+        .describe("Order of the replies: Relevance (default), Recency or Likes."),
       cursor: optionalCursor,
       responseFormat,
     },
@@ -448,7 +482,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_tweet_quotes",
     title: "Get Tweet Quotes",
-    description: "Fetch one page of tweets that quote a given tweet, by post ID or post link.",
+    description:
+      "Fetch one page of quote posts of a post (posts that quote it), by post ID or post link. Use tweetapi_tweet_retweets for plain reposts and tweetapi_tweet_details for replies.",
     method: "GET",
     path: "/tw-v2/tweet/quotes",
     inputSchema: { tweetId, cursor: optionalCursor, responseFormat },
@@ -458,7 +493,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_tweet_retweets",
     title: "Get Tweet Retweets",
-    description: "Fetch one page of users who retweeted a given tweet, by post ID or post link.",
+    description:
+      "Fetch one page of the accounts that reposted a post, by post ID or post link. Use tweetapi_tweet_quotes for quote posts.",
     method: "GET",
     path: "/tw-v2/tweet/retweets",
     inputSchema: { tweetId, cursor: optionalCursor, responseFormat },
@@ -479,12 +515,17 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_tweet_translate",
     title: "Translate Tweet",
-    description: "Translate public tweet text without changing the tweet.",
+    description:
+      "Translate one post's text into another language with X's translation, by post ID or post link. The post itself is not changed. Use tweetapi_tweet_details to read the original post and its replies.",
     method: "POST",
     path: "/tw-v2/tweet/translate",
     inputSchema: {
       tweetId,
-      dstLang: z.string().min(2).max(5),
+      dstLang: z
+        .string()
+        .min(2)
+        .max(5)
+        .describe("Language code to translate into, such as en, es, fr, ja or zh-CN."),
     },
     bodyFields: ["tweetId", "dstLang"],
     identifiers: { tweetId: "tweet" },
@@ -492,7 +533,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_list_details",
     title: "Get List Details",
-    description: "Fetch public details for a list.",
+    description:
+      "Fetch one X List's details by List ID or List link: name, description, owner, member and follower counts, and whether it is public or private. Use tweetapi_list_tweets for its posts, tweetapi_list_members for the accounts in it, and tweetapi_list_followers for the accounts following it.",
     method: "GET",
     path: "/tw-v2/list/details",
     inputSchema: { listId },
@@ -501,7 +543,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_list_tweets",
     title: "Get List Tweets",
-    description: "Fetch one page of the tweet timeline for a list.",
+    description:
+      "Fetch one page of the posts in a List's timeline, by List ID or List link. Use tweetapi_list_members to see whose posts the List includes.",
     method: "GET",
     path: "/tw-v2/list/tweets",
     inputSchema: { listId, cursor: optionalCursor, responseFormat },
@@ -511,7 +554,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_list_members",
     title: "Get List Members",
-    description: "Fetch one page of the accounts that are members of a list.",
+    description:
+      "Fetch one page of the accounts that are members of a List, by List ID or List link. Use tweetapi_list_followers for the accounts that follow the List, or tweetapi_list_details for its counts.",
     method: "GET",
     path: "/tw-v2/list/members",
     inputSchema: { listId, cursor: optionalCursor, responseFormat },
@@ -536,13 +580,22 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
       "Search X Lists by keyword and fetch one page of matching Lists. A page can be short without being the last one. Use the List IDs with tweetapi_list_tweets or tweetapi_list_members.",
     method: "GET",
     path: "/tw-v2/list/search",
-    inputSchema: { query: z.string().min(1).max(512), cursor: optionalCursor, responseFormat },
+    inputSchema: {
+      query: z
+        .string()
+        .min(1)
+        .max(512)
+        .describe("Keywords to find Lists by, 1 to 512 characters, as in X's List search."),
+      cursor: optionalCursor,
+      responseFormat,
+    },
     compactKind: "lists",
   },
   {
     name: "tweetapi_community_details",
     title: "Get Community Details",
-    description: "Fetch public details for a community.",
+    description:
+      "Fetch one community's details by community ID or community link: name, description, member count and settings. Use tweetapi_community_tweets for its posts and tweetapi_community_members for its members.",
     method: "GET",
     path: "/tw-v2/community/details",
     inputSchema: { communityId },
@@ -551,12 +604,15 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_community_tweets",
     title: "Get Community Tweets",
-    description: "Fetch one page of tweets posted in a community.",
+    description:
+      "Fetch one page of posts in a community, by community ID or community link, in the order set by sortBy. Use tweetapi_community_media for only the posts with photos or videos.",
     method: "GET",
     path: "/tw-v2/community/tweets",
     inputSchema: {
       communityId,
-      sortBy: communitySortBy.default("Relevance"),
+      sortBy: communitySortBy
+        .default("Relevance")
+        .describe("Order of the posts: Relevance (default) or Recency."),
       cursor: optionalCursor,
       responseFormat,
     },
@@ -577,7 +633,8 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_community_members",
     title: "Get Community Members",
-    description: "Fetch one page of a community's members.",
+    description:
+      "Fetch one page of a community's members, by community ID or community link. Use tweetapi_community_details for the member count.",
     method: "GET",
     path: "/tw-v2/community/members",
     inputSchema: { communityId, cursor: optionalCursor, responseFormat },
@@ -587,10 +644,17 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
   {
     name: "tweetapi_community_search",
     title: "Search Communities",
-    description: "Search communities by keyword. Use tweetapi_search for tweets and users.",
+    description:
+      "Search X communities by keyword and fetch one page of matches. Pass a result's ID to tweetapi_community_details or tweetapi_community_tweets. Use tweetapi_search for posts and accounts.",
     method: "GET",
     path: "/tw-v2/community/search",
-    inputSchema: { query: z.string().min(1), cursor: optionalCursor },
+    inputSchema: {
+      query: z
+        .string()
+        .min(1)
+        .describe("Keywords to find communities by, as in X's community search."),
+      cursor: optionalCursor,
+    },
   },
   {
     name: "tweetapi_space_by_id",
@@ -609,7 +673,12 @@ export const LIVE_TOOL_ENDPOINTS: readonly LiveToolEndpoint[] = [
       "Fetch the audio stream URL for a Space, using the media key from tweetapi_space_by_id.",
     method: "GET",
     path: "/tw-v2/space/stream-url",
-    inputSchema: { mediaKey: z.string().min(1) },
+    inputSchema: {
+      mediaKey: z
+        .string()
+        .min(1)
+        .describe("The Space's media key, from a tweetapi_space_by_id result."),
+    },
   },
   {
     name: "tweetapi_trends",
@@ -694,7 +763,11 @@ export function createLiveToolDefinitions(options: LiveToolsOptions): LiveToolDe
     description:
       endpoint.responseShape === "accountUsage"
         ? endpoint.description
-        : `${LIVE_TOOL_NOTICE} ${endpoint.description}`,
+        : [
+            endpoint.description,
+            LIVE_TOOL_NOTICE,
+            ...("cursor" in endpoint.inputSchema ? [PAGED_TOOL_NOTICE] : []),
+          ].join(" "),
     inputSchema: endpoint.inputSchema,
     outputSchema: LIVE_TOOL_OUTPUT_SCHEMA,
     handler: async (args) => runLiveRequest(endpoint, args, options),
